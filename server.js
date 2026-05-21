@@ -1,7 +1,7 @@
 const { Telegraf } = require('telegraf');
 const mongoose = require('mongoose');
 const express = require('express');
-const User = require('./models/User'); // Giữ nguyên file này như bạn yêu cầu
+const User = require('./models/User'); 
 
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -13,48 +13,41 @@ mongoose.connect(process.env.MONGODB_URI)
 
 bot.start(async (ctx) => {
     const { id, first_name, username } = ctx.from;
-    const startPayload = ctx.startPayload; // ID người mời (nếu có)
-    const today = new Date().toDateString(); // Định dạng: "Thu May 21 2026"
+    const startPayload = ctx.startPayload; 
+    const today = new Date().toDateString(); 
     
     try {
-        // 1. Tìm người dùng dựa trên telegramId (kiểu String trong Model của bạn)
         let user = await User.findOne({ telegramId: id.toString() });
 
         if (!user) {
-            // 2. Nếu chưa có, tạo mới với các trường khớp hoàn toàn với Model
             user = new User({
-                telegramId: id.toString(),   // ID
-                username: username || 'n/a',  // Username
-                name: first_name,             // Tên
-                totalCoins: 0,                // Số dư XU
-                spinsLeft: 5,                 // Lượt quay mặc định
-                adsWatchedToday: 0,           // Số lượt xem quảng cáo (ban đầu là 0)
-                lastActiveDay: today,         // Ngày hoạt động
-                refs: 0                       // Số người đã mời
+                telegramId: id.toString(),   
+                username: username || 'n/a',  
+                name: first_name,             
+                totalCoins: 0,                
+                spinsLeft: 5,                  
+                adsWatchedToday: 0,           
+                lastActiveDay: today,         
+                refs: 0                       
             });
 
-            // 3. Logic xử lý Referral (Người mời bạn)
             if (startPayload && startPayload !== id.toString()) {
                 const inviter = await User.findOne({ telegramId: startPayload });
                 if (inviter) {
-                    inviter.totalCoins += 100000; // Thưởng 100k xu
+                    inviter.totalCoins += 100000; 
                     inviter.refs += 1;
                     await inviter.save();
                     
-                    // Thông báo cho người mời biết có bạn mới tham gia
                     try {
                         await bot.telegram.sendMessage(inviter.telegramId, `🎁 Chúc mừng! Bạn nhận được 100,000 Xu vì đã mời ${first_name} tham gia!`);
                     } catch (e) { console.log("Lỗi gửi tin báo cho người mời"); }
                 }
             }
             await user.save();
-            console.log(`✨ Đã tạo dữ liệu Mongo thành công cho ID: ${id}`);
         } else {
-            // 4. Nếu là người dùng cũ, cập nhật lại thông tin cơ bản
             user.name = first_name;
             user.username = username || 'n/a';
             
-            // Tự động reset lượt quay và lượt xem quảng cáo khi sang ngày mới
             if (user.lastActiveDay !== today) {
                 user.spinsLeft = 5;
                 user.adsWatchedToday = 0;
@@ -63,7 +56,6 @@ bot.start(async (ctx) => {
             await user.save();
         }
 
-        // 5. Gửi tin nhắn chào mừng kèm thông tin thực tế từ Database
         const welcomeMsg = `🎰 Chào mừng ${first_name}!\n\n` +
                            `👤 ID: ${id}\n` +
                            `🎁 Lượt quay hôm nay: ${user.spinsLeft}\n` +
@@ -85,22 +77,69 @@ bot.start(async (ctx) => {
     }
 });
 
-// Các lệnh Admin (Dùng telegramId để khớp với Model)
+// --- CẬP NHẬT LỆNH BROADCAST MỚI ---
 bot.command('broadcast', async (ctx) => {
     if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    
     const msg = ctx.message.text.replace('/broadcast', '').trim();
-    if (!msg) return ctx.reply("Nhập nội dung thông báo!");
+    if (!msg) return ctx.reply("❌ Vui lòng nhập nội dung: /broadcast [Nội dung]");
 
     const users = await User.find({});
-    ctx.reply(`🚀 Đang gửi thông báo tới ${users.length} người...`);
+    await ctx.reply(`🚀 Bắt đầu gửi thông báo tới ${users.length} người dùng...`);
+
+    let success = 0;
+    let blocked = 0;
+    let error = 0;
 
     for (const u of users) {
         try {
-            await bot.telegram.sendMessage(u.telegramId, `📢 **THÔNG BÁO:**\n\n${msg}`, { parse_mode: 'Markdown' });
+            await bot.telegram.sendMessage(u.telegramId, `📢 **THÔNG BÁO HỆ THỐNG**\n\n${msg}`, { parse_mode: 'Markdown' });
+            success++;
+            // Chống spam API Telegram
             await new Promise(r => setTimeout(r, 50)); 
-        } catch (e) {}
+        } catch (e) {
+            if (e.description && e.description.includes('forbidden')) {
+                blocked++;
+            } else {
+                error++;
+            }
+        }
     }
-    ctx.reply("✅ Gửi hoàn tất!");
+
+    ctx.reply(`📊 **KẾT QUẢ BROADCAST**\n\n` +
+              `✅ Thành công: ${success}\n` +
+              `🚫 Người chặn Bot: ${blocked}\n` +
+              `❌ Lỗi khác: ${error}\n` +
+              `👥 Tổng user: ${users.length}`);
+});
+
+// --- THÊM LỆNH LIST MỚI ---
+bot.command('list', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+
+    try {
+        // Lấy top 50 người dùng nhiều xu nhất
+        const users = await User.find({}).sort({ totalCoins: -1 }).limit(50);
+        if (users.length === 0) return ctx.reply("Chưa có thành viên nào.");
+
+        let text = "👥 **DANH SÁCH THÀNH VIÊN (TOP 50)**\n\n";
+        users.forEach((u, i) => {
+            text += `${i + 1}. **${u.name}** (@${u.username})\n` +
+                    `   ID: \`${u.telegramId}\`\n` +
+                    `   Số dư: ${u.totalCoins.toLocaleString()} Xu | Ref: ${u.refs}\n` +
+                    `----------------------\n`;
+            
+            // Chia nhỏ tin nhắn nếu quá dài (Telegram giới hạn 4096 ký tự)
+            if (text.length > 3500) {
+                ctx.reply(text, { parse_mode: 'Markdown' });
+                text = "";
+            }
+        });
+
+        if (text) ctx.reply(text, { parse_mode: 'Markdown' });
+    } catch (e) {
+        ctx.reply("❌ Lỗi khi lấy danh sách thành viên.");
+    }
 });
 
 app.use(express.json());
@@ -109,6 +148,5 @@ app.use(bot.webhookCallback('/api/tg-webhook'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
     console.log(`Bot Server (Tài khoản A) đang chạy tại cổng ${PORT}`);
-    // Cập nhật webhook
     await bot.telegram.setWebhook(`${process.env.APP_URL}/api/tg-webhook`);
 });
