@@ -8,7 +8,7 @@ const userSchema = new mongoose.Schema({
     spinsLeft: { type: Number, default: 5 },
     adsWatchedToday: { type: Number, default: 0 },
     lastActiveDay: { type: String, default: new Date().toDateString() },
-    refs: { type: Number, default: 0 } // Số người đã mời thành công
+    refs: { type: Number, default: 0 }
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
