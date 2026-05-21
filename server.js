@@ -1,77 +1,73 @@
-const express = require('express');
+const { Telegraf } = require('telegraf');
 const mongoose = require('mongoose');
-const cors = require('cors');
-const path = require('path');
-const fetch = require('node-fetch');
+const express = require('express');
 const User = require('./models/User');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Kết nối MongoDB với cơ chế Timeout để tránh treo Render
-mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
-    .then(() => console.log('🚀 [DB] Connected'))
-    .catch(err => console.error('❌ [DB] Error:', err.message));
+// Kết nối Database chung
+mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('✅ Bot Server đã kết nối Database chung'))
+    .catch(err => console.error('❌ Lỗi kết nối DB:', err));
 
-// API lấy cấu hình cho Frontend
-app.get('/api/config', (req, res) => {
-    res.json({
-        adsgramId: process.env.ADSGRAM_BLOCK_ID,
-        botUsername: process.env.BOT_USERNAME
+// Logic khi người dùng nhấn /start
+bot.start(async (ctx) => {
+    const { id, first_name, username } = ctx.from;
+    
+    try {
+        // Cập nhật thông tin người dùng mỗi khi họ start bot
+        await User.findOneAndUpdate(
+            { telegramId: id.toString() },
+            { name: first_name, username: username },
+            { upsert: true }
+        );
+    } catch (e) { console.error("Lỗi cập nhật User:", e); }
+
+    ctx.reply(`🎰 Chào mừng ${first_name}!\n\nHệ thống đã sẵn sàng. Nhấn nút bên dưới để vào Vòng Quay May Mắn và nhận xu mỗi ngày.`, {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🎮 MỞ MINI APP', web_app: { url: process.env.WEB_URL } }]
+            ]
+        }
     });
 });
 
-// Nhận diện người dùng & Cập nhật Username/Tên thời gian thực
-app.post('/api/status', async (req, res) => {
-    const { telegramId, username, name, refId } = req.body;
-    const today = new Date().toDateString();
-    try {
-        let user = await User.findOneAndUpdate(
-            { telegramId },
-            { $set: { username: username || 'n/a', name: name || 'User' } },
-            { new: true, upsert: true }
-        );
-
-        if (user.lastActiveDay !== today) {
-            user.adsWatchedToday = 0;
-            user.lastActiveDay = today;
-            await user.save();
-        }
-        res.json(user);
-    } catch (e) { res.status(500).json({ error: "Server Error" }); }
+// Lệnh Admin: /saoluu (Chỉ Admin mới dùng được)
+bot.command('saoluu', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    const users = await User.find({});
+    const data = JSON.stringify(users, null, 2);
+    ctx.replyWithDocument({ source: Buffer.from(data), filename: 'user_backup.json' });
 });
 
-// Logic nhận xu ngẫu nhiên 500 - 50.000
-app.post('/api/claim', async (req, res) => {
-    const { telegramId, isAds } = req.body;
-    try {
-        const user = await User.findOne({ telegramId });
-        if (!user) return res.status(404).json({ success: false });
+// Lệnh Admin: /broadcast (Gửi thông báo toàn hệ thống)
+bot.command('broadcast', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    const msg = ctx.message.text.replace('/broadcast', '').trim();
+    if (!msg) return ctx.reply("Vui lòng nhập nội dung tin nhắn!");
 
-        if (!isAds && user.spinsLeft <= 0) {
-            return res.json({ success: false, message: "Hết lượt quay miễn phí!" });
-        }
+    const users = await User.find({});
+    ctx.reply(`🚀 Đang gửi tin nhắn tới ${users.length} người dùng...`);
 
-        const lucky = Math.floor(Math.random() * (50000 - 500 + 1)) + 500;
-        
-        if (isAds) { user.adsWatchedToday += 1; } 
-        else { user.spinsLeft -= 1; }
-
-        user.totalCoins += lucky;
-        await user.save();
-        res.json({ success: true, lucky, user });
-    } catch (e) { res.status(500).json({ success: false }); }
+    for (const u of users) {
+        try {
+            await bot.telegram.sendMessage(u.telegramId, `📢 **THÔNG BÁO:**\n\n${msg}`, { parse_mode: 'Markdown' });
+            await new Promise(r => setTimeout(r, 50)); // Tránh bị Telegram chặn do gửi quá nhanh
+        } catch (e) { console.log(`Không thể gửi tới ${u.telegramId}`); }
+    }
+    ctx.reply("✅ Đã hoàn thành phát tin!");
 });
 
-// API Quản trị (Dùng cho /account)
-app.get('/api/admin/users', async (req, res) => {
-    const { pass } = req.query;
-    if (pass !== process.env.ADMIN_PASS) return res.status(403).send("Access Denied");
-    const users = await User.find().sort({ totalCoins: -1 });
-    res.json(users);
-});
+// Thiết lập Webhook để tối ưu RAM cho Render
+app.use(express.json());
+app.use(bot.webhookCallback('/api/tg-webhook'));
+
+app.get('/', (req, res) => res.send('Bot is running...'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Listening on ${PORT}`));
+app.listen(PORT, async () => {
+    console.log(`Bot Server listening on port ${PORT}`);
+    // Đăng ký Webhook với Telegram
+    await bot.telegram.setWebhook(`${process.env.APP_URL}/api/tg-webhook`);
+});
