@@ -8,7 +8,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Kết nối Database
 mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('✅ Bot Server (Tài khoản A) đã kết nối MongoDB'))
+    .then(() => console.log('✅ Bot Server đã kết nối MongoDB'))
     .catch(err => console.error('❌ Lỗi kết nối DB:', err));
 
 bot.start(async (ctx) => {
@@ -24,8 +24,10 @@ bot.start(async (ctx) => {
                 telegramId: id.toString(),   
                 username: username || 'n/a',  
                 name: first_name,             
-                totalCoins: 0,                
-                spinsLeft: 5,                  
+                totalCoins: 0,
+                diamonds: 0,           // Mới
+                level: 1,              // Mới
+                isMining: false,       // Mới
                 adsWatchedToday: 0,           
                 lastActiveDay: today,         
                 refs: 0                       
@@ -49,7 +51,6 @@ bot.start(async (ctx) => {
             user.username = username || 'n/a';
             
             if (user.lastActiveDay !== today) {
-                user.spinsLeft = 5;
                 user.adsWatchedToday = 0;
                 user.lastActiveDay = today;
             }
@@ -58,10 +59,11 @@ bot.start(async (ctx) => {
 
         const welcomeMsg = `🎰 Chào mừng ${first_name}!\n\n` +
                            `👤 ID: ${id}\n` +
-                           `🎁 Lượt quay hôm nay: ${user.spinsLeft}\n` +
-                           `📺 QC đã xem: ${user.adsWatchedToday}/5\n` +
-                           `💰 Số dư hiện tại: ${user.totalCoins.toLocaleString()} Xu\n\n` +
-                           `Hãy nhấn nút bên dưới để bắt đầu kiếm tiền! 👇`;
+                           `📊 Level: ${user.level || 1}\n` +
+                           `💎 Kim cương: ${user.diamonds || 0}\n` +
+                           `📺 QC đã xem: ${user.adsWatchedToday}/15\n` +
+                           `💰 Số dư: ${user.totalCoins.toLocaleString()} Xu\n\n` +
+                           `Hãy nhấn nút bên dưới để bắt đầu đào xu! 👇`;
 
         ctx.reply(welcomeMsg, {
             reply_markup: {
@@ -72,12 +74,12 @@ bot.start(async (ctx) => {
         });
 
     } catch (e) { 
-        console.error("❌ Lỗi xử lý tại Tài khoản A:", e);
+        console.error("❌ Lỗi xử lý bot.start:", e);
         ctx.reply("Hệ thống đang bảo trì, vui lòng thử lại sau!");
     }
 });
 
-// --- CẬP NHẬT LỆNH BROADCAST MỚI ---
+// --- LỆNH BROADCAST ---
 bot.command('broadcast', async (ctx) => {
     if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
     
@@ -87,58 +89,43 @@ bot.command('broadcast', async (ctx) => {
     const users = await User.find({});
     await ctx.reply(`🚀 Bắt đầu gửi thông báo tới ${users.length} người dùng...`);
 
-    let success = 0;
-    let blocked = 0;
-    let error = 0;
-
+    let success = 0, blocked = 0, error = 0;
     for (const u of users) {
         try {
             await bot.telegram.sendMessage(u.telegramId, `📢 **THÔNG BÁO HỆ THỐNG**\n\n${msg}`, { parse_mode: 'Markdown' });
             success++;
-            // Chống spam API Telegram
             await new Promise(r => setTimeout(r, 50)); 
         } catch (e) {
-            if (e.description && e.description.includes('forbidden')) {
-                blocked++;
-            } else {
-                error++;
-            }
+            if (e.description && e.description.includes('forbidden')) blocked++;
+            else error++;
         }
     }
-
-    ctx.reply(`📊 **KẾT QUẢ BROADCAST**\n\n` +
-              `✅ Thành công: ${success}\n` +
-              `🚫 Người chặn Bot: ${blocked}\n` +
-              `❌ Lỗi khác: ${error}\n` +
-              `👥 Tổng user: ${users.length}`);
+    ctx.reply(`📊 Kết quả: ✅ ${success} | 🚫 ${blocked} | ❌ ${error}`);
 });
 
-// --- THÊM LỆNH LIST MỚI ---
+// --- LỆNH LIST (CẬP NHẬT THÔNG TIN MỚI) ---
 bot.command('list', async (ctx) => {
     if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
 
     try {
-        // Lấy top 50 người dùng nhiều xu nhất
         const users = await User.find({}).sort({ totalCoins: -1 }).limit(50);
         if (users.length === 0) return ctx.reply("Chưa có thành viên nào.");
 
-        let text = "👥 **DANH SÁCH THÀNH VIÊN (TOP 50)**\n\n";
+        let text = "👥 **TOP 50 THỢ ĐÀO**\n\n";
         users.forEach((u, i) => {
-            text += `${i + 1}. **${u.name}** (@${u.username})\n` +
-                    `   ID: \`${u.telegramId}\`\n` +
-                    `   Số dư: ${u.totalCoins.toLocaleString()} Xu | Ref: ${u.refs}\n` +
+            text += `${i + 1}. **${u.name}** (Lvl ${u.level || 1})\n` +
+                    `   💎 ${u.diamonds || 0} | 📺 ${u.adsWatchedToday}/15\n` +
+                    `   💰 ${u.totalCoins.toLocaleString()} Xu | ${u.isMining ? '⛏️ Đang đào' : '💤 Nghỉ'}\n` +
                     `----------------------\n`;
             
-            // Chia nhỏ tin nhắn nếu quá dài (Telegram giới hạn 4096 ký tự)
-            if (text.length > 3500) {
+            if (text.length > 3000) {
                 ctx.reply(text, { parse_mode: 'Markdown' });
                 text = "";
             }
         });
-
         if (text) ctx.reply(text, { parse_mode: 'Markdown' });
     } catch (e) {
-        ctx.reply("❌ Lỗi khi lấy danh sách thành viên.");
+        ctx.reply("❌ Lỗi khi lấy danh sách.");
     }
 });
 
@@ -147,6 +134,6 @@ app.use(bot.webhookCallback('/api/tg-webhook'));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-    console.log(`Bot Server (Tài khoản A) đang chạy tại cổng ${PORT}`);
+    console.log(`Bot Server đang chạy tại cổng ${PORT}`);
     await bot.telegram.setWebhook(`${process.env.APP_URL}/api/tg-webhook`);
 });
