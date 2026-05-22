@@ -131,7 +131,15 @@ bot.command('list', async (ctx) => {
 
 app.use(express.json());
 app.use(bot.webhookCallback('/api/tg-webhook'));
-
+// --- ĐỊA CHỈ KIỂM TRA TRẠNG THÁI SERVER ---
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        dbState: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+    });
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
     console.log(`Bot Server đang chạy tại cổng ${PORT}`);
