@@ -4,28 +4,27 @@ const userSchema = new mongoose.Schema({
     telegramId: { type: String, required: true, unique: true, index: true },
     username: { type: String, default: 'n/a' },
     name: { type: String, default: 'Người dùng' },
+    
+    // --- KINH TẾ 2.0 ---
     totalCoins: { type: Number, default: 0 },
-    spinsLeft: { type: Number, default: 5 },
+    diamonds: { type: Number, default: 0 },
     
-    // Tổng số quảng cáo đã xem trong ngày (dùng để check điều kiện rút tiền)
+    // --- HỆ THỐNG MÁY ĐÀO (MINING 6H) ---
+    level: { type: Number, default: 1 },
+    isMining: { type: Boolean, default: false },
+    miningStartedAt: { type: Date, default: null },
+    
+    // TRƯỜNG MỚI: Tốc độ khai thác (Xu/giây)
+    // Mặc định level 1 = 12.0 Xu/s
+    miningRate: { type: Number, default: 12.0 }, 
+
+    // --- QUẢN LÝ QUẢNG CÁO ---
     adsWatchedToday: { type: Number, default: 0 },
-    
-    // Ngày hoạt động gần nhất để reset các chỉ số daily
     lastActiveDay: { type: String, default: new Date().toDateString() },
-    
-    // --- THEO DÕI GIỚI HẠN 10 LƯỢT/NGÀY ---
-    dailyVideo: { type: Number, default: 0 },
-    dailyInterstitial: { type: Number, default: 0 },
-    dailyBanner: { type: Number, default: 0 },
 
-    // --- THEO DÕI COOLDOWN (CHỐNG SPAM CLICK) ---
-    lastVideo: { type: Date },
-    lastInterstitial: { type: Date },
-    lastBanner: { type: Date },
-
-    // Hệ thống giới thiệu
+    // --- GIỚI THIỆU ---
     refs: { type: Number, default: 0 },
-    referredBy: { type: String, default: null } // Lưu ID người mời nếu cần
+    referredBy: { type: String, default: null } 
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
