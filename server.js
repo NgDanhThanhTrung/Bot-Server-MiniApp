@@ -1,4 +1,4 @@
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const mongoose = require('mongoose');
 const express = require('express');
 const User = require('./models/User'); 
@@ -6,50 +6,75 @@ const User = require('./models/User');
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Kết nối Database
+// ==========================================
+// 1. CẤU HÌNH KINH TẾ (20,000 XU = 1 VNĐ)
+// ==========================================
+const EXCHANGE_RATE = 20000;    // Tỷ lệ quy đổi
+const START_REWARD = 50000;     // Thưởng người mới
+const REF_REWARD = 100000;      // Thưởng người mời
+
+// Kết nối MongoDB
 mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('✅ Bot Server đã kết nối MongoDB'))
+    .then(() => console.log('✅ Bot Server đã kết nối Database Kinh Tế 2.0'))
     .catch(err => console.error('❌ Lỗi kết nối DB:', err));
 
+// ==========================================
+// 2. LOGIC XỬ LÝ LỆNH /START
+// ==========================================
 bot.start(async (ctx) => {
     const { id, first_name, username } = ctx.from;
-    const startPayload = ctx.startPayload; 
-    const today = new Date().toDateString(); 
+    const startPayload = ctx.startPayload; // Lấy ID người mời từ link ref
+    const today = new Date().toDateString();
     
     try {
         let user = await User.findOne({ telegramId: id.toString() });
 
         if (!user) {
+            // TẠO NGƯỜI DÙNG MỚI (KHỚP HOÀN TOÀN VỚI USER.JS)
             user = new User({
-                telegramId: id.toString(),   
-                username: username || 'n/a',  
-                name: first_name,             
-                totalCoins: 0,
-                diamonds: 0,           // Mới
-                level: 1,              // Mới
-                isMining: false,       // Mới
-                adsWatchedToday: 0,           
-                lastActiveDay: today,         
-                refs: 0                       
+                telegramId: id.toString(),
+                username: username || 'n/a',
+                name: first_name,
+                totalCoins: START_REWARD,
+                diamonds: 0,
+                level: 1,
+                isMining: false,
+                miningStartedAt: null,
+                miningRate: 12.0, // Tốc độ mặc định level 1
+                adsWatchedToday: 0,
+                lastActiveDay: today,
+                refs: 0,
+                referredBy: null
             });
 
+            // Xử lý hệ thống giới thiệu
             if (startPayload && startPayload !== id.toString()) {
                 const inviter = await User.findOne({ telegramId: startPayload });
                 if (inviter) {
-                    inviter.totalCoins += 100000; 
+                    // Thưởng cho người mời
+                    inviter.totalCoins += REF_REWARD;
                     inviter.refs += 1;
                     await inviter.save();
-                    
+
+                    // Lưu vết người giới thiệu cho người mới
+                    user.referredBy = startPayload;
+
+                    // Thông báo cho người mời
                     try {
-                        await bot.telegram.sendMessage(inviter.telegramId, `🎁 Chúc mừng! Bạn nhận được 100,000 Xu vì đã mời ${first_name} tham gia!`);
-                    } catch (e) { console.log("Lỗi gửi tin báo cho người mời"); }
+                        await bot.telegram.sendMessage(inviter.telegramId, 
+                            `🎉 *Mời bạn thành công!*\nBạn nhận được *+${REF_REWARD.toLocaleString()} Xu* vì đã mời ${first_name} tham gia!`,
+                            { parse_mode: 'Markdown' }
+                        );
+                    } catch (e) { console.log("Không thể gửi tin báo cho người mời"); }
                 }
             }
             await user.save();
         } else {
+            // CẬP NHẬT THÔNG TIN NẾU LÀ NGƯỜI DÙNG CŨ
             user.name = first_name;
             user.username = username || 'n/a';
             
+            // Reset lượt xem quảng cáo nếu sang ngày mới
             if (user.lastActiveDay !== today) {
                 user.adsWatchedToday = 0;
                 user.lastActiveDay = today;
@@ -57,91 +82,79 @@ bot.start(async (ctx) => {
             await user.save();
         }
 
-        const welcomeMsg = `🎰 Chào mừng ${first_name}!\n\n` +
-                           `👤 ID: ${id}\n` +
-                           `📊 Level: ${user.level || 1}\n` +
-                           `💎 Kim cương: ${user.diamonds || 0}\n` +
-                           `📺 QC đã xem: ${user.adsWatchedToday}/15\n` +
-                           `💰 Số dư: ${user.totalCoins.toLocaleString()} Xu\n\n` +
-                           `Hãy nhấn nút bên dưới để bắt đầu đào xu! 👇`;
+        // TÍNH TOÁN GIÁ TRỊ VNĐ ĐỂ HIỂN THỊ
+        const vndValue = (user.totalCoins / EXCHANGE_RATE).toLocaleString('vi-VN');
 
-        ctx.reply(welcomeMsg, {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '🎮 MỞ MINI APP', web_app: { url: process.env.WEB_URL } }]
-                ]
-            }
-        });
+        const welcomeMsg = `🚀 *CHÀO MỪNG ĐẾN VỚI MÁY ĐÀO XU 2.0*\n\n` +
+                           `👤 Chủ nhân: *${first_name}*\n` +
+                           `📊 Cấp độ: *Level ${user.level}*\n` +
+                           `⚡ Tốc độ đào: *${user.miningRate} Xu/s*\n` +
+                           `💰 Số dư: *${user.totalCoins.toLocaleString()} Xu*\n` +
+                           `💸 Quy đổi: *~${vndValue} VNĐ*\n` +
+                           `💎 Kim cương: *${user.diamonds}*\n\n` +
+                           `👇 Nhấn nút bên dưới để bắt đầu khai thác ngay!`;
 
-    } catch (e) { 
-        console.error("❌ Lỗi xử lý bot.start:", e);
-        ctx.reply("Hệ thống đang bảo trì, vui lòng thử lại sau!");
+        ctx.replyWithMarkdown(welcomeMsg, Markup.inlineKeyboard([
+            [Markup.button.webApp('🎮 MỞ MÁY ĐÀO XU', process.env.WEB_URL)]
+        ]));
+
+    } catch (e) {
+        console.error("❌ Lỗi Start Bot:", e);
+        ctx.reply("Hệ thống đang bận, vui lòng thử lại sau!");
     }
 });
 
-// --- LỆNH BROADCAST ---
+// ==========================================
+// 3. LỆNH ADMIN (DÀNH RIÊNG CHO CHỦ BOT)
+// ==========================================
+
+// Gửi thông báo toàn hệ thống
 bot.command('broadcast', async (ctx) => {
     if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
-    
     const msg = ctx.message.text.replace('/broadcast', '').trim();
-    if (!msg) return ctx.reply("❌ Vui lòng nhập nội dung: /broadcast [Nội dung]");
+    if (!msg) return ctx.reply("❌ Nhập nội dung: /broadcast [Nội dung]");
 
     const users = await User.find({});
-    await ctx.reply(`🚀 Bắt đầu gửi thông báo tới ${users.length} người dùng...`);
+    ctx.reply(`🚀 Đang gửi thông báo tới ${users.length} người dùng...`);
 
-    let success = 0, blocked = 0, error = 0;
+    let success = 0;
     for (const u of users) {
         try {
-            await bot.telegram.sendMessage(u.telegramId, `📢 **THÔNG BÁO HỆ THỐNG**\n\n${msg}`, { parse_mode: 'Markdown' });
+            await bot.telegram.sendMessage(u.telegramId, `📢 *THÔNG BÁO HỆ THỐNG*\n\n${msg}`, { parse_mode: 'Markdown' });
             success++;
-            await new Promise(r => setTimeout(r, 50)); 
-        } catch (e) {
-            if (e.description && e.description.includes('forbidden')) blocked++;
-            else error++;
-        }
+            await new Promise(r => setTimeout(r, 50)); // Tránh spam
+        } catch (e) { continue; }
     }
-    ctx.reply(`📊 Kết quả: ✅ ${success} | 🚫 ${blocked} | ❌ ${error}`);
+    ctx.reply(`✅ Đã gửi thành công tới ${success} người dùng.`);
 });
 
-// --- LỆNH LIST (CẬP NHẬT THÔNG TIN MỚI) ---
+// Xem danh sách Top thợ đào
 bot.command('list', async (ctx) => {
     if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
-
     try {
-        const users = await User.find({}).sort({ totalCoins: -1 }).limit(50);
-        if (users.length === 0) return ctx.reply("Chưa có thành viên nào.");
-
-        let text = "👥 **TOP 50 THỢ ĐÀO**\n\n";
-        users.forEach((u, i) => {
-            text += `${i + 1}. **${u.name}** (Lvl ${u.level || 1})\n` +
-                    `   💎 ${u.diamonds || 0} | 📺 ${u.adsWatchedToday}/15\n` +
-                    `   💰 ${u.totalCoins.toLocaleString()} Xu | ${u.isMining ? '⛏️ Đang đào' : '💤 Nghỉ'}\n` +
-                    `----------------------\n`;
-            
-            if (text.length > 3000) {
-                ctx.reply(text, { parse_mode: 'Markdown' });
-                text = "";
-            }
+        const topUsers = await User.find().sort({ totalCoins: -1 }).limit(20);
+        let text = "🏆 *TOP 20 ĐẠI GIA MÁY ĐÀO*\n\n";
+        topUsers.forEach((u, i) => {
+            text += `${i + 1}. ${u.name} - ${u.totalCoins.toLocaleString()} Xu\n`;
         });
-        if (text) ctx.reply(text, { parse_mode: 'Markdown' });
-    } catch (e) {
-        ctx.reply("❌ Lỗi khi lấy danh sách.");
-    }
+        ctx.replyWithMarkdown(text);
+    } catch (e) { ctx.reply("Lỗi lấy dữ liệu."); }
 });
 
+// ==========================================
+// 4. CẤU HÌNH WEB SERVER & WEBHOOK
+// ==========================================
 app.use(express.json());
 app.use(bot.webhookCallback('/api/tg-webhook'));
-// --- ĐỊA CHỈ KIỂM TRA TRẠNG THÁI SERVER ---
+
+app.get('/', (req, res) => res.send('Bot Mining 2.0 (Rate 20,000:1) is Active'));
+
+// Endpoint kiểm tra sức khỏe server
 app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-        dbState: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
-    });
+    res.json({ status: 'running', db: mongoose.connection.readyState === 1 ? 'ok' : 'error' });
 });
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
-    console.log(`Bot Server đang chạy tại cổng ${PORT}`);
-    await bot.telegram.setWebhook(`${process.env.APP_URL}/api/tg-webhook`);
+app.listen(PORT, () => {
+    console.log(`[Server] Đang chạy trên cổng ${PORT}`);
 });
