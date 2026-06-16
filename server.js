@@ -141,6 +141,109 @@ bot.command('list', async (ctx) => {
     } catch (e) { ctx.reply("Lỗi lấy dữ liệu."); }
 });
 
+// CỘNG XU CHO NGƯỜI DÙNG
+bot.command('addcoin', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    
+    // Cú pháp: /addcoin [telegramId] [số xu]
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 2) return ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /addcoin [telegramId] [số xu]");
+
+    const targetId = args[0].trim();
+    const amountCoins = parseInt(args[1]);
+
+    if (isNaN(amountCoins)) return ctx.reply("❌ Số tiền cộng phải là một số hợp lệ!");
+
+    try {
+        const user = await User.findOne({ telegramId: targetId });
+        if (!user) return ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
+
+        user.totalCoins += amountCoins;
+        await user.save();
+
+        ctx.reply(`✅ Đã cộng *+${amountCoins.toLocaleString()} Xu* cho người dùng *${user.name}* (ID: ${targetId}).\n💰 Số dư mới: *${user.totalCoins.toLocaleString()} Xu*`, { parse_mode: 'Markdown' });
+        
+        // Thông báo cho người được cộng xu
+        try {
+            await bot.telegram.sendMessage(targetId, `🎁 Bạn vừa được Admin tặng *+${amountCoins.toLocaleString()} Xu* vào tài khoản!`, { parse_mode: 'Markdown' });
+        } catch (err) { console.log(`Không thể gửi tin nhắn thông báo cho tài khoản ${targetId}`); }
+
+    } catch (e) {
+        ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
+    }
+});
+
+// CỘNG KIM CƯƠNG CHO NGƯỜI DÙNG
+bot.command('adddiamond', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    
+    // Cú pháp: /adddiamond [telegramId] [số kim cương]
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 2) return ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /adddiamond [telegramId] [số kim cương]");
+
+    const targetId = args[0].trim();
+    const amountDiamonds = parseInt(args[1]);
+
+    if (isNaN(amountDiamonds)) return ctx.reply("❌ Số kim cương cộng phải là một số hợp lệ!");
+
+    try {
+        const user = await User.findOne({ telegramId: targetId });
+        if (!user) return ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
+
+        user.diamonds += amountDiamonds;
+        await user.save();
+
+        ctx.reply(`✅ Đã cộng *+${amountDiamonds.toLocaleString()} 💎* cho người dùng *${user.name}* (ID: ${targetId}).\n💎 Số dư mới: *${user.diamonds} Kim cương*`, { parse_mode: 'Markdown' });
+        
+        // Thông báo cho người được cộng kim cương
+        try {
+            await bot.telegram.sendMessage(targetId, `🎁 Bạn vừa được Admin tặng *+${amountDiamonds.toLocaleString()} 💎* vào tài khoản!`, { parse_mode: 'Markdown' });
+        } catch (err) { console.log(`Không thể gửi tin nhắn thông báo cho tài khoản ${targetId}`); }
+
+    } catch (e) {
+        ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
+    }
+});
+
+// THAY ĐỔI LEVEL CHO NGƯỜI DÙNG (TỰ ĐỘNG CẬP NHẬT TỐC ĐỘ ĐÀO)
+bot.command('setlevel', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+
+    // Cú pháp: /setlevel [telegramId] [cấp độ muốn đặt]
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 2) return ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /setlevel [telegramId] [Level]");
+
+    const targetId = args[0].trim();
+    const newLevel = parseInt(args[1]);
+
+    if (isNaN(newLevel) || newLevel < 1) return ctx.reply("❌ Cấp độ phải là số nguyên lớn hơn hoặc bằng 1!");
+
+    try {
+        const user = await User.findOne({ telegramId: targetId });
+        if (!user) return ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
+
+        // Công thức tính tốc độ đào dựa trên logic file Web-Service: 
+        // Tốc độ mặc định Level 1 là 12 Xu/s. Mỗi cấp tăng thêm 0.2 (20%).
+        const RATE_INCREASE_PER_LEVEL = 0.2;
+        const baseRate = 12.0;
+        const newMiningRate = baseRate + (newLevel - 1) * baseRate * RATE_INCREASE_PER_LEVEL;
+
+        user.level = newLevel;
+        user.miningRate = parseFloat(newMiningRate.toFixed(1)); // Làm tròn 1 chữ số thập phân
+        await user.save();
+
+        ctx.reply(`✅ Đã điều chỉnh tài khoản *${user.name}* lên *Level ${newLevel}*.\n⚡ Tốc độ khai thác mới: *${user.miningRate} Xu/s*`, { parse_mode: 'Markdown' });
+
+        // Thông báo cho người dùng
+        try {
+            await bot.telegram.sendMessage(targetId, `🆙 Tài khoản của bạn đã được thay đổi lên *Level ${newLevel}* bởi Admin!\n⚡ Tốc độ đào mới: *${user.miningRate} Xu/s*`, { parse_mode: 'Markdown' });
+        } catch (err) { console.log(`Không thể gửi tin nhắn thông báo cho tài khoản ${targetId}`); }
+
+    } catch (e) {
+        ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
+    }
+});
+
 // ==========================================
 // 4. CẤU HÌNH WEB SERVER & WEBHOOK
 // ==========================================
