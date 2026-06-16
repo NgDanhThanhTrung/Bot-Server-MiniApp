@@ -194,6 +194,10 @@ bot.command('myid', async (ctx) => {
 // ==========================================
 // TÍNH NĂNG MỚI: ĐIỂM DANH HÀNG NGÀY (/checkin)
 // ==========================================
+// ==========================================
+// TÍNH NĂNG MỚI: ĐIỂM DANH HÀNG NGÀY (/checkin) - GIỚI HẠN 1 NGÀY/LẦN
+// (Không cần sửa file User.js)
+// ==========================================
 bot.command('checkin', async (ctx) => {
     const { id } = ctx.from;
     const today = new Date().toDateString();
@@ -202,8 +206,11 @@ bot.command('checkin', async (ctx) => {
         const user = await User.findOne({ telegramId: id.toString() });
         if (!user) return ctx.reply("❌ Vui lòng gõ lệnh /start trước khi điểm danh.");
 
-        // Kiểm tra xem đã điểm danh hôm nay chưa thông qua trường ẩn
-        if (user.toObject().lastCheckinDate === today) {
+        // Đọc trường ẩn trực tiếp từ MongoDB bằng phương thức .get()
+        const lastCheckin = user.get('lastCheckinDate');
+
+        // Kiểm tra xem hôm nay đã bấm điểm danh chưa
+        if (lastCheckin === today) {
             return ctx.reply("❌ Hôm nay bạn đã nhận quà điểm danh rồi! Hãy quay lại vào ngày mai.", Markup.inlineKeyboard([miniAppButton]));
         }
 
@@ -211,9 +218,10 @@ bot.command('checkin', async (ctx) => {
         const CHECKIN_REWARD = 25000; 
         user.totalCoins += CHECKIN_REWARD;
         
-        // Ghi lại ngày điểm danh bằng phương thức .set() động của Mongoose
+        // Ghi đè trường ẩn trực tiếp vào MongoDB bằng phương thức .set() mà không cần khai báo ở User.js
         user.set('lastCheckinDate', today);
-        user.lastActiveDay = today;
+        user.lastActiveDay = today; // Cập nhật ngày hoạt động đồng bộ hệ thống của bạn
+        
         await user.save();
 
         ctx.replyWithMarkdown(
