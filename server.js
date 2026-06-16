@@ -31,9 +31,11 @@ const miniAppButton = [Markup.button.webApp('🎮 MỞ MÁY ĐÀO XU', process.e
 // ==========================================
 async function registerBotCommands() {
     try {
-        // 1. Menu mặc định dành cho TẤT CẢ NGƯỜI DÙNG (Ẩn hoàn toàn lệnh Admin)
+        // 1. Menu mặc định dành cho TẤT CẢ NGƯỜI DÙNG (Bổ sung tính năng mới)
         await bot.telegram.setMyCommands([
             { command: 'start', description: '🚀 Khởi động máy đào & Xem số dư' },
+            { command: 'checkin', description: '🎁 Điểm danh hàng ngày nhận Xu' },
+            { command: 'luckywheel', description: '🎰 Vòng quay may mắn bằng Kim cương' },
             { command: 'myid', description: '🆔 Xem ID Telegram của bản thân' }
         ], { scope: { type: 'default' } });
 
@@ -41,6 +43,8 @@ async function registerBotCommands() {
         if (process.env.ADMIN_ID) {
             await bot.telegram.setMyCommands([
                 { command: 'start', description: '🚀 Khởi động máy đào & Xem số dư' },
+                { command: 'checkin', description: '🎁 Điểm danh hàng ngày nhận Xu' },
+                { command: 'luckywheel', description: '🎰 Vòng quay may mắn bằng Kim cương' },
                 { command: 'myid', description: '🆔 Xem ID Telegram của bản thân' },
                 // Các lệnh độc quyền hiển thị riêng cho Admin trên thanh Menu bấm nhanh
                 { command: 'list', description: '🏆 [Admin] Xem danh sách toàn bộ người dùng' },
@@ -80,10 +84,10 @@ async function getUserListPage(page) {
     users.forEach((u, i) => {
         const usernameText = u.username !== 'n/a' ? `@${u.username}` : 'Không có';
         text += `${startIndex + i + 1}. *${u.name}*\n` +
-                `   ├ 🆔 ID: \`${u.telegramId}\`\n` +
-                `   ├ 👤 User: ${usernameText}\n` +
-                `   ├ 💰 Số Xu: *${u.totalCoins.toLocaleString()} Xu*\n` +
-                `   └ 💎 Kim cương: *${u.diamonds} 💎*\n\n`;
+                `    ├ 🆔 ID: \`${u.telegramId}\`\n` +
+                `    ├ 👤 User: ${usernameText}\n` +
+                `    ├ 💰 Số Xu: *${u.totalCoins.toLocaleString()} Xu*\n` +
+                `    └ 💎 Kim cương: *${u.diamonds} 💎*\n\n`;
     });
 
     const buttons = [];
@@ -185,6 +189,132 @@ bot.start(async (ctx) => {
 bot.command('myid', async (ctx) => {
     const { id, first_name } = ctx.from;
     ctx.replyWithMarkdown(`👤 Tài khoản: *${first_name}*\n🆔 ID Telegram của bạn là: \`${id}\`\n\n_(Chạm tay vào số ID ở trên để sao chép nhanh)_`);
+});
+
+// ==========================================
+// TÍNH NĂNG MỚI: ĐIỂM DANH HÀNG NGÀY (/checkin)
+// ==========================================
+bot.command('checkin', async (ctx) => {
+    const { id } = ctx.from;
+    const today = new Date().toDateString();
+
+    try {
+        const user = await User.findOne({ telegramId: id.toString() });
+        if (!user) return ctx.reply("❌ Vui lòng gõ lệnh /start trước khi điểm danh.");
+
+        // Kiểm tra xem đã điểm danh hôm nay chưa thông qua trường ẩn
+        if (user.toObject().lastCheckinDate === today) {
+            return ctx.reply("❌ Hôm nay bạn đã nhận quà điểm danh rồi! Hãy quay lại vào ngày mai.", Markup.inlineKeyboard([miniAppButton]));
+        }
+
+        // Phần thưởng điểm danh cố định: 25,000 Xu
+        const CHECKIN_REWARD = 25000; 
+        user.totalCoins += CHECKIN_REWARD;
+        
+        // Ghi lại ngày điểm danh bằng phương thức .set() động của Mongoose
+        user.set('lastCheckinDate', today);
+        user.lastActiveDay = today;
+        await user.save();
+
+        ctx.replyWithMarkdown(
+            `🎁 *ĐIỂM DANH HÀNG NGÀY THÀNH CÔNG!*\n\n` +
+            `🎉 Phần thưởng: *+${CHECKIN_REWARD.toLocaleString()} Xu*\n` +
+            `💰 Số dư tài khoản hiện tại: *${user.totalCoins.toLocaleString()} Xu*`, 
+            Markup.inlineKeyboard([miniAppButton])
+        );
+
+    } catch (e) {
+        console.error("Lỗi điểm danh:", e);
+        ctx.reply("Hệ thống điểm danh đang bảo trì, vui lòng thử lại sau!");
+    }
+});
+
+// ==========================================
+// TÍNH NĂNG MỚI: VÒNG QUAY MAY MẮN (/luckywheel)
+// ==========================================
+bot.command('luckywheel', async (ctx) => {
+    const { id } = ctx.from;
+    const COST_DIAMOND = 5; // Chi phí mỗi lượt quay: 5 Kim cương
+
+    try {
+        const user = await User.findOne({ telegramId: id.toString() });
+        if (!user) return ctx.reply("❌ Vui lòng gõ lệnh /start trước.");
+
+        // Kiểm tra xem người dùng có đủ kim cương không
+        if (user.diamonds < COST_DIAMOND) {
+            return ctx.reply(
+                `❌ Bạn không đủ Kim cương! Mỗi lượt quay yêu cầu *${COST_DIAMOND} 💎*.\n` +
+                `👉 Hãy vào MiniApp làm nhiệm vụ xem quảng cáo để kiếm thêm Kim cương nhé.`, 
+                { parse_mode: 'Markdown', ...Markup.inlineKeyboard([miniAppButton]) }
+            );
+        }
+
+        // Khấu trừ kim cương
+        user.diamonds -= COST_DIAMOND;
+
+        // Danh sách cơ cấu giải thưởng (Tùy ý điều chỉnh phần thưởng và tên)
+        const prizes = [
+            { name: "😢 Chúc bạn may mắn lần sau!", type: "empty", value: 0 },
+            { name: "💰 +20,000 Xu", type: "coin", value: 20000 },
+            { name: "🔥 +100,000 Xu (Trúng lớn)", type: "coin", value: 100000 },
+            { name: "💎 +2 Kim cương", type: "diamond", value: 2 },
+            { name: "🆙 Tăng +1 Cấp độ (Level Up)", type: "levelup", value: 1 },
+            { name: "💰 +50,000 Xu", type: "coin", value: 50000 }
+        ];
+
+        // Quay ngẫu nhiên phần quà
+        const randomIndex = Math.floor(Math.random() * prizes.length);
+        const prize = prizes[randomIndex];
+
+        let resultText = `🎰 *VÒNG QUAY MAY MẮN 🎰*\n\n` +
+                         `💸 Chi phí: -${COST_DIAMOND} 💎\n` +
+                         `🎁 Quà nhận được: *${prize.name}*\n\n`;
+
+        // Áp dụng phần thưởng vào tài khoản
+        if (prize.type === 'coin') {
+            user.totalCoins += prize.value;
+            resultText += `💰 Số dư mới: *${user.totalCoins.toLocaleString()} Xu*`;
+        } else if (prize.type === 'diamond') {
+            user.diamonds += prize.value;
+            resultText += `💎 Số dư Kim cương: *${user.diamonds} 💎*`;
+        } else if (prize.type === 'levelup') {
+            user.level += 1;
+            // Áp dụng công thức tính toán tốc độ đào đồng bộ với hệ thống (/setlevel)
+            const RATE_INCREASE_PER_LEVEL = 0.2;
+            const baseRate = 12.0;
+            const newMiningRate = baseRate + (user.level - 1) * baseRate * RATE_INCREASE_PER_LEVEL;
+            user.miningRate = parseFloat(newMiningRate.toFixed(1));
+            
+            resultText += `🆙 Cấp độ mới: *Level ${user.level}*\n⚡ Tốc độ khai thác mới: *${user.miningRate} Xu/s*`;
+        } else {
+            resultText += `😢 Chúc bạn may mắn hơn ở các lượt quay kế tiếp!`;
+        }
+
+        await user.save();
+
+        // Trả kết quả kèm Inline Button quay tiếp bằng Action
+        ctx.replyWithMarkdown(resultText, Markup.inlineKeyboard([
+            [Markup.button.callback('🎰 Quay tiếp (-5 💎)', 'spin_wheel')],
+            miniAppButton
+        ]));
+
+    } catch (e) {
+        console.error("Lỗi xử lý vòng quay:", e);
+        ctx.reply("Vòng quay đang bận, vui lòng thử lại sau!");
+    }
+});
+
+// Lắng nghe hành vi bấm nút "Quay tiếp" trực tiếp từ giao diện Inline
+bot.action('spin_wheel', async (ctx) => {
+    try {
+        await ctx.answerCbQuery(); // Tắt trạng thái loading trên nút bấm Telegram
+        
+        // Điều hướng giả lập hành vi gửi tin nhắn để chạy lại logic /luckywheel phía trên
+        ctx.message = { text: '/luckywheel' };
+        return bot.handleUpdate(ctx.update);
+    } catch (e) { 
+        console.log("Lỗi hành động vòng quay:", e); 
+    }
 });
 
 // ==========================================
