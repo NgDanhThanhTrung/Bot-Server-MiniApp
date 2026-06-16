@@ -230,29 +230,34 @@ bot.command('checkin', async (ctx) => {
 });
 
 // ==========================================
-// TÍNH NĂNG MỚI: VÒNG QUAY MAY MẮN (/luckywheel)
+// TÍNH NĂNG MỚI: VÒNG QUAY MAY MẮN VÀ THAY THẾ VĂN BẢN
 // ==========================================
-bot.command('luckywheel', async (ctx) => {
+async function runLuckyWheel(ctx, isCallback = false) {
     const { id } = ctx.from;
     const COST_DIAMOND = 5; // Chi phí mỗi lượt quay: 5 Kim cương
 
     try {
         const user = await User.findOne({ telegramId: id.toString() });
-        if (!user) return ctx.reply("❌ Vui lòng gõ lệnh /start trước.");
+        if (!user) {
+            const msg = "❌ Vui lòng gõ lệnh /start trước.";
+            return isCallback ? ctx.answerCbQuery(msg, { show_alert: true }) : ctx.reply(msg);
+        }
 
         // Kiểm tra xem người dùng có đủ kim cương không
         if (user.diamonds < COST_DIAMOND) {
-            return ctx.reply(
-                `❌ Bạn không đủ Kim cương! Mỗi lượt quay yêu cầu *${COST_DIAMOND} 💎*.\n` +
-                `👉 Hãy vào MiniApp làm nhiệm vụ xem quảng cáo để kiếm thêm Kim cương nhé.`, 
-                { parse_mode: 'Markdown', ...Markup.inlineKeyboard([miniAppButton]) }
-            );
+            const msg = `❌ Bạn không đủ Kim cương! Mỗi lượt quay yêu cầu *${COST_DIAMOND} 💎*.\n👉 Hãy vào MiniApp làm nhiệm vụ xem quảng cáo để kiếm thêm Kim cương nhé.`;
+            
+            if (isCallback) {
+                return ctx.answerCbQuery("❌ Bạn không đủ Kim cương!", { show_alert: true });
+            } else {
+                return ctx.replyWithMarkdown(msg, Markup.inlineKeyboard([miniAppButton]));
+            }
         }
 
         // Khấu trừ kim cương
         user.diamonds -= COST_DIAMOND;
 
-        // Danh sách cơ cấu giải thưởng (Tùy ý điều chỉnh phần thưởng và tên)
+        // Danh sách cơ cấu giải thưởng
         const prizes = [
             { name: "😢 Chúc bạn may mắn lần sau!", type: "empty", value: 0 },
             { name: "💰 +20,000 Xu", type: "coin", value: 20000 },
@@ -279,7 +284,6 @@ bot.command('luckywheel', async (ctx) => {
             resultText += `💎 Số dư Kim cương: *${user.diamonds} 💎*`;
         } else if (prize.type === 'levelup') {
             user.level += 1;
-            // Áp dụng công thức tính toán tốc độ đào đồng bộ với hệ thống (/setlevel)
             const RATE_INCREASE_PER_LEVEL = 0.2;
             const baseRate = 12.0;
             const newMiningRate = baseRate + (user.level - 1) * baseRate * RATE_INCREASE_PER_LEVEL;
@@ -292,29 +296,38 @@ bot.command('luckywheel', async (ctx) => {
 
         await user.save();
 
-        // Trả kết quả kèm Inline Button quay tiếp bằng Action
-        ctx.replyWithMarkdown(resultText, Markup.inlineKeyboard([
+        // Cấu trúc cụm phím Inline
+        const keyboard = Markup.inlineKeyboard([
             [Markup.button.callback('🎰 Quay tiếp (-5 💎)', 'spin_wheel')],
             miniAppButton
-        ]));
+        ]);
+
+        if (isCallback) {
+            // Nếu click nút "Quay tiếp": Sửa nội dung đè lên bong bóng chat hiện tại
+            await ctx.editMessageText(resultText, { parse_mode: 'Markdown', ...keyboard });
+            await ctx.answerCbQuery("🎰 Kết quả mới đã xuất hiện!"); 
+        } else {
+            // Nếu gõ lệnh gốc /luckywheel: Gửi tin nhắn mới tinh làm gốc
+            await ctx.replyWithMarkdown(resultText, keyboard);
+        }
 
     } catch (e) {
         console.error("Lỗi xử lý vòng quay:", e);
-        ctx.reply("Vòng quay đang bận, vui lòng thử lại sau!");
+        const errMsg = "Vòng quay đang bận, vui lòng thử lại sau!";
+        if (isCallback) {
+            ctx.answerCbQuery(errMsg, { show_alert: true });
+        } else {
+            ctx.reply(errMsg);
+        }
     }
+}
+
+bot.command('luckywheel', async (ctx) => {
+    await runLuckyWheel(ctx, false);
 });
 
-// Lắng nghe hành vi bấm nút "Quay tiếp" trực tiếp từ giao diện Inline
 bot.action('spin_wheel', async (ctx) => {
-    try {
-        await ctx.answerCbQuery(); // Tắt trạng thái loading trên nút bấm Telegram
-        
-        // Điều hướng giả lập hành vi gửi tin nhắn để chạy lại logic /luckywheel phía trên
-        ctx.message = { text: '/luckywheel' };
-        return bot.handleUpdate(ctx.update);
-    } catch (e) { 
-        console.log("Lỗi hành động vòng quay:", e); 
-    }
+    await runLuckyWheel(ctx, true);
 });
 
 // ==========================================
