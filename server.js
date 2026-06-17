@@ -188,14 +188,24 @@ bot.command('myid', async (ctx) => {
 });
 
 // ==========================================
-// TÍNH NĂNG MỚI: ĐIỂM DANH HÀNG NGÀY (/checkin) - ANTI-CHEAT TUYỆT ĐỐI
+// TÍNH NĂNG: ĐIỂM DANH TUẦN TỰ (STREAK 7 NGÀY) - GIỚI HẠN 1 NGÀY/LẦN
+// (Tối ưu hóa: Chống cheat, không sửa file User.js)
 // ==========================================
 bot.command('checkin', async (ctx) => {
     const { id } = ctx.from;
-    const today = new Date().toDateString();
+    
+    // Mốc thời gian tính toán
+    const now = new Date();
+    const todayStr = now.toDateString(); // Định dạng: "Wed Jun 17 2026"
+    
+    // Tính toán chuỗi ngày hôm qua để kiểm tra đứt chuỗi
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toDateString();
+
     const lockKey = `checkin_${id}`;
 
-    // Chặn đứng hoàn toàn tool gửi spam click đồng thời
+    // Chặn đứng tool spam click đồng thời (Race Condition)
     if (processingLocks.has(lockKey)) return;
     processingLocks.add(lockKey);
 
@@ -203,41 +213,91 @@ bot.command('checkin', async (ctx) => {
         const user = await User.findOne({ telegramId: id.toString() });
         if (!user) return await ctx.reply("❌ Vui lòng gõ lệnh /start trước khi điểm danh.");
 
+        // 1. Đọc dữ liệu ẩn từ MongoDB
         const lastCheckin = user.get('lastCheckinDate');
-        if (lastCheckin === today) {
-            return await ctx.reply("❌ Hôm nay bạn đã nhận quà điểm danh rồi! Hãy quay lại vào ngày mai.", Markup.inlineKeyboard([miniAppButton]));
+        let currentStreak = parseInt(user.get('checkinStreak')) || 0;
+
+        // 2. Kiểm tra xem hôm nay đã điểm danh chưa
+        if (lastCheckin === todayStr) {
+            return await ctx.reply(
+                `⚠️ Hôm nay bạn đã nhận quà điểm danh rồi!\n🔥 Chuỗi hiện tại: *Ngày ${currentStreak}/7*\n\n👉 Hãy quay lại vào ngày mai để tiếp tục tăng chuỗi nha!`, 
+                { parse_mode: 'Markdown', ...Markup.inlineKeyboard([miniAppButton]) }
+            );
         }
 
-        const CHECKIN_REWARD = 25000; 
-        
-        // Sử dụng toán tử điều kiện Mongoose bảo vệ việc cập nhật độc quyền chống trùng lặp ngày
+        // 3. Tính toán thiết lập lại chuỗi hoặc tăng tiến chuỗi
+        if (lastCheckin === yesterdayStr) {
+            // Nếu ngày điểm danh cuối cùng là ngày hôm qua -> Tiếp tục chuỗi liên tục
+            currentStreak = currentStreak >= 7 ? 1 : currentStreak + 1;
+        } else {
+            // Nếu bỏ quên không bấm từ những ngày trước đó -> Đứt chuỗi, quay về Ngày 1
+            currentStreak = 1;
+        }
+
+        // 4. Định nghĩa cấu trúc phần thưởng tương ứng theo ngày trong chuỗi
+        const streakRewards = {
+            1: { coins: 10000, diamonds: 0 },
+            2: { coins: 15000, diamonds: 0 },
+            3: { coins: 20000, diamonds: 0 },
+            4: { coins: 25000, diamonds: 0 },
+            5: { coins: 30000, diamonds: 0 },
+            6: { coins: 40000, diamonds: 0 },
+            7: { coins: 60000, diamonds: 1 } // Quà đặc biệt ngày cuối chuỗi
+        };
+
+        const reward = streakRewards[currentStreak];
+
+        // 5. Sử dụng Atomic Update để đảm bảo tính an toàn dữ liệu tuyệt đối
         const updatedUser = await User.findOneAndUpdate(
             { 
                 telegramId: id.toString(),
+                // Chỉ cho phép update nếu ngày lưu cuối cùng thực sự khác ngày hôm nay (Double Check chống cheat)
                 $or: [
-                    { "lastCheckinDate": { $ne: today } },
+                    { "lastCheckinDate": { $ne: todayStr } },
                     { "lastCheckinDate": { $exists: false } }
                 ]
             },
             { 
-                $inc: { totalCoins: CHECKIN_REWARD },
-                $set: { "lastCheckinDate": today, lastActiveDay: today }
+                $inc: { 
+                    totalCoins: reward.coins,
+                    diamonds: reward.diamonds
+                },
+                $set: { 
+                    "lastCheckinDate": todayStr, 
+                    "checkinStreak": currentStreak,
+                    lastActiveDay: todayStr 
+                }
             },
             { new: true }
         );
 
         if (!updatedUser) {
-            return await ctx.reply("❌ Hôm nay bạn đã nhận quà điểm danh rồi! Hãy quay lại vào ngày mai.", Markup.inlineKeyboard([miniAppButton]));
+            return await ctx.reply("❌ Thao tác quá nhanh hoặc bạn đã điểm danh hôm nay rồi!");
         }
 
-        await ctx.replyWithMarkdown(
-            `🎁 *ĐIỂM DANH HÀNG NGÀY THÀNH CÔNG!*\n\n` +
-            `🎉 Phần thưởng: *+${CHECKIN_REWARD.toLocaleString()} Xu*\n` +
-            `💰 Số dư tài khoản hiện tại: *${updatedUser.totalCoins.toLocaleString()} Xu*`, 
-            Markup.inlineKeyboard([miniAppButton])
-        );
+        // 6. Thiết kế giao diện tiến trình chuỗi trực quan gửi cho người dùng
+        let progressBars = "";
+        for (let i = 1; i <= 7; i++) {
+            if (i < currentStreak) progressBars += "✅";
+            else if (i === currentStreak) progressBars += "🔥";
+            else progressBars += "⬜";
+        }
+
+        let rewardText = `🎁 *ĐIỂM DANH TUẦN TỰ THÀNH CÔNG (Ngày ${currentStreak}/7)*\n\n` +
+                         `✨ Phần thưởng: *+${reward.coins.toLocaleString()} Xu* ${reward.diamonds > 0 ? `và *+${reward.diamonds} 💎*` : ''}\n` +
+                         `📊 Tiến độ chuỗi: ${progressBars}\n\n` +
+                         `💰 Số dư tài khoản: *${updatedUser.totalCoins.toLocaleString()} Xu*`;
+
+        if (currentStreak === 7) {
+            rewardText += `\n\n🎉 *Chúc mừng bạn đã hoàn thành chuỗi 7 ngày xuất sắc! Chuỗi sẽ tự động làm mới vào ngày mai.*`;
+        } else {
+            rewardText += `\n\n💡 Đừng quên quay lại vào ngày mai để nhận quà lớn hơn là *+${streakRewards[currentStreak + 1].coins.toLocaleString()} Xu* nhé!`;
+        }
+
+        await ctx.replyWithMarkdown(rewardText, Markup.inlineKeyboard([miniAppButton]));
+
     } catch (e) {
-        console.error("Lỗi điểm danh:", e);
+        console.error("Lỗi xử lý điểm danh chuỗi:", e);
         await ctx.reply("Hệ thống điểm danh đang bảo trì, vui lòng thử lại sau!");
     } finally {
         processingLocks.delete(lockKey);
