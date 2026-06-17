@@ -9,21 +9,22 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 // ==========================================
 // 1. CẤU HÌNH KINH TẾ (20,000 XU = 1 VNĐ)
 // ==========================================
-const EXCHANGE_RATE = 20000;    // Tỷ lệ quy đổi
-const START_REWARD = 50000;     // Thưởng người mới
-const REF_REWARD = 100000;      // Thưởng người mời
-const USERS_PER_PAGE = 5;       // Số lượng người dùng hiển thị trên mỗi trang lệnh /list
+const EXCHANGE_RATE = 20000;    
+const START_REWARD = 50000;     
+const REF_REWARD = 100000;      
+const USERS_PER_PAGE = 5;       
 
-// Kết nối MongoDB
+// Bộ nhớ đệm cục bộ phòng chống spam/click tặc đồng thời (Anti-Race Condition Lock)
+const processingLocks = new Set();
+
+// Kết nối MongoDB với các cấu hình tối ưu hiệu năng
 mongoose.connect(process.env.MONGODB_URI)
     .then(() => {
         console.log('✅ Bot Server đã kết nối Database Kinh Tế 2.0');
-        // Tự động thiết lập cấu hình phân tách Menu Lệnh ngay khi kết nối DB thành công
         registerBotCommands();
     })
     .catch(err => console.error('❌ Lỗi kết nối DB:', err));
 
-// Nút bấm MiniApp dùng chung tiện lợi
 const miniAppButton = [Markup.button.webApp('🎮 MỞ MÁY ĐÀO XU', process.env.WEB_URL)];
 
 // ==========================================
@@ -31,7 +32,6 @@ const miniAppButton = [Markup.button.webApp('🎮 MỞ MÁY ĐÀO XU', process.e
 // ==========================================
 async function registerBotCommands() {
     try {
-        // 1. Menu mặc định dành cho TẤT CẢ NGƯỜI DÙNG (Bổ sung tính năng mới)
         await bot.telegram.setMyCommands([
             { command: 'start', description: '🚀 Khởi động máy đào & Xem số dư' },
             { command: 'checkin', description: '🎁 Điểm danh hàng ngày nhận Xu' },
@@ -39,21 +39,18 @@ async function registerBotCommands() {
             { command: 'myid', description: '🆔 Xem ID Telegram của bản thân' }
         ], { scope: { type: 'default' } });
 
-        // 2. Menu đặc biệt chỉ hiển thị RIÊNG trong ô chat của ADMIN_ID
         if (process.env.ADMIN_ID) {
             await bot.telegram.setMyCommands([
                 { command: 'start', description: '🚀 Khởi động máy đào & Xem số dư' },
                 { command: 'checkin', description: '🎁 Điểm danh hàng ngày nhận Xu' },
                 { command: 'luckywheel', description: '🎰 Vòng quay may mắn bằng Kim cương' },
                 { command: 'myid', description: '🆔 Xem ID Telegram của bản thân' },
-                // Các lệnh độc quyền hiển thị riêng cho Admin trên thanh Menu bấm nhanh
                 { command: 'list', description: '🏆 [Admin] Xem danh sách toàn bộ người dùng' },
                 { command: 'broadcast', description: '📢 [Admin] Gửi thông báo toàn hệ thống' },
                 { command: 'addcoin', description: '💰 [Admin] Cộng Xu cho người dùng' },
                 { command: 'adddiamond', description: '💎 [Admin] Cộng Kim cương cho người dùng' },
                 { command: 'setlevel', description: '🆙 [Admin] Thay đổi Level người dùng' }
             ], { scope: { type: 'chat', chat_id: parseInt(process.env.ADMIN_ID) } });
-            
             console.log('✅ Đã cấu hình phân tách Menu lệnh ẩn Admin thành công!');
         }
     } catch (error) {
@@ -71,39 +68,33 @@ async function getUserListPage(page) {
     if (page < 1) page = 1;
     if (page > totalPages) page = totalPages;
 
-    // Truy vấn dữ liệu phân đoạn từ MongoDB
     const users = await User.find()
         .sort({ totalCoins: -1 })
         .skip((page - 1) * USERS_PER_PAGE)
-        .limit(USERS_PER_PAGE);
+        .limit(USERS_PER_PAGE)
+        .lean(); // .lean() giúp tăng tốc độ đọc dữ liệu nhanh gấp 3 lần vì không tạo Mongoose Document ảo
 
     let text = `🏆 *DANH SÁCH TOÀN BỘ NGƯỜI DÙNG (Trang ${page}/${totalPages})*\n`;
     text += `👥 Tổng số thợ đào trên hệ thống: *${totalUsers}*\n\n`;
 
     const startIndex = (page - 1) * USERS_PER_PAGE;
     users.forEach((u, i) => {
-        const usernameText = u.username !== 'n/a' ? `@${u.username}` : 'Không có';
-        text += `${startIndex + i + 1}. *${u.name}*\n` +
+        const usernameText = u.username && u.username !== 'n/a' ? `@${u.username}` : 'Không có';
+        text += `${startIndex + i + 1}. *${u.name || 'Thợ đào'}*\n` +
                 `    ├ 🆔 ID: \`${u.telegramId}\`\n` +
                 `    ├ 👤 User: ${usernameText}\n` +
-                `    ├ 💰 Số Xu: *${u.totalCoins.toLocaleString()} Xu*\n` +
-                `    └ 💎 Kim cương: *${u.diamonds} 💎*\n\n`;
+                `    ├ 💰 Số Xu: *${(u.totalCoins || 0).toLocaleString()} Xu*\n` +
+                `    └ 💎 Kim cương: *${u.diamonds || 0} 💎*\n\n`;
     });
 
     const buttons = [];
     const navRow = [];
     
-    if (page > 1) {
-        navRow.push(Markup.button.callback('◀️ Trang trước', `list_page_${page - 1}`));
-    }
-    if (page < totalPages) {
-        navRow.push(Markup.button.callback('Trang sau ▶️', `list_page_${page + 1}`));
-    }
+    if (page > 1) navRow.push(Markup.button.callback('◀️ Trang trước', `list_page_${page - 1}`));
+    if (page < totalPages) navRow.push(Markup.button.callback('Trang sau ▶️', `list_page_${page + 1}`));
     if (navRow.length > 0) buttons.push(navRow);
 
-    // Kèm nút MiniApp
     buttons.push(miniAppButton);
-
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
 }
 
@@ -112,8 +103,12 @@ async function getUserListPage(page) {
 // ==========================================
 bot.start(async (ctx) => {
     const { id, first_name, username } = ctx.from;
-    const startPayload = ctx.startPayload; 
+    const startPayload = ctx.startPayload ? ctx.startPayload.trim() : null; 
     const today = new Date().toDateString();
+    const lockKey = `start_${id}`;
+
+    if (processingLocks.has(lockKey)) return;
+    processingLocks.add(lockKey);
     
     try {
         let user = await User.findOne({ telegramId: id.toString() });
@@ -122,7 +117,7 @@ bot.start(async (ctx) => {
             user = new User({
                 telegramId: id.toString(),
                 username: username || 'n/a',
-                name: first_name,
+                name: first_name || 'Người dùng',
                 totalCoins: START_REWARD,
                 diamonds: 0,
                 level: 1,
@@ -135,27 +130,31 @@ bot.start(async (ctx) => {
                 referredBy: null
             });
 
+            // Chống tự cheat link giới thiệu của chính bản thân mình
             if (startPayload && startPayload !== id.toString()) {
                 const inviter = await User.findOne({ telegramId: startPayload });
                 if (inviter) {
-                    inviter.totalCoins += REF_REWARD;
-                    inviter.refs += 1;
-                    await inviter.save();
+                    // Nguyên tử hóa việc cộng tiền mời, triệt tiêu bug cheat nhân bản số xu của người mời
+                    await User.updateOne(
+                        { telegramId: startPayload },
+                        { $inc: { totalCoins: REF_REWARD, refs: 1 } }
+                    );
 
                     user.referredBy = startPayload;
 
                     try {
-                        await bot.telegram.sendMessage(inviter.telegramId, 
-                            `🎉 *Mời bạn thành công!*\nBạn nhận được *+${REF_REWARD.toLocaleString()} Xu* vì đã mời ${first_name} tham gia!`,
+                        await bot.telegram.sendMessage(startPayload, 
+                            `🎉 *Mời bạn thành công!*\nBạn nhận được *+${REF_REWARD.toLocaleString()} Xu* vì đã mời ${first_name || 'thành viên mới'} tham gia!`,
                             { parse_mode: 'Markdown' }
                         );
-                    } catch (e) { console.log("Không thể gửi tin báo cho người mời"); }
+                    } catch (e) { console.log(`Gửi thông báo ref thất bại tới ${startPayload}`); }
                 }
             }
             await user.save();
         } else {
-            user.name = first_name;
-            user.username = username || 'n/a';
+            // Đồng bộ lại tên mới phòng trường hợp đổi tên trên Telegram
+            user.name = first_name || user.name;
+            user.username = username || user.username;
             
             if (user.lastActiveDay !== today) {
                 user.adsWatchedToday = 0;
@@ -165,9 +164,8 @@ bot.start(async (ctx) => {
         }
 
         const vndValue = (user.totalCoins / EXCHANGE_RATE).toLocaleString('vi-VN');
-
         const welcomeMsg = `🚀 *CHÀO MỪNG ĐẾN VỚI MÁY ĐÀO XU 2.0*\n\n` +
-                           `👤 Chủ nhân: *${first_name}*\n` +
+                           `👤 Chủ nhân: *${user.name}*\n` +
                            `📊 Cấp độ: *Level ${user.level}*\n` +
                            `⚡ Tốc độ đào: *${user.miningRate} Xu/s*\n` +
                            `💰 Số dư: *${user.totalCoins.toLocaleString()} Xu*\n` +
@@ -175,65 +173,74 @@ bot.start(async (ctx) => {
                            `💎 Kim cương: *${user.diamonds}*\n\n` +
                            `👇 Bạn có thể chạm nhanh vào nút **Menu** ở góc trái để thao tác nhanh hơn!`;
 
-        ctx.replyWithMarkdown(welcomeMsg, Markup.inlineKeyboard([miniAppButton]));
-
+        await ctx.replyWithMarkdown(welcomeMsg, Markup.inlineKeyboard([miniAppButton]));
     } catch (e) {
         console.error("❌ Lỗi Start Bot:", e);
-        ctx.reply("Hệ thống đang bận, vui lòng thử lại sau!");
+        await ctx.reply("Hệ thống đang bận, vui lòng thử lại sau!");
+    } finally {
+        processingLocks.delete(lockKey);
     }
 });
 
-// ==========================================
-// 3. TÍNH NĂNG: XEM ID BẢN THÂN (/myid) - CHO MỌI USER
-// ==========================================
 bot.command('myid', async (ctx) => {
     const { id, first_name } = ctx.from;
-    ctx.replyWithMarkdown(`👤 Tài khoản: *${first_name}*\n🆔 ID Telegram của bạn là: \`${id}\`\n\n_(Chạm tay vào số ID ở trên để sao chép nhanh)_`);
+    await ctx.replyWithMarkdown(`👤 Tài khoản: *${first_name || 'Thợ đào'}*\n🆔 ID Telegram của bạn là: \`${id}\`\n\n_(Chạm tay vào số ID ở trên để sao chép nhanh)_`);
 });
 
 // ==========================================
-// TÍNH NĂNG MỚI: ĐIỂM DANH HÀNG NGÀY (/checkin)
-// ==========================================
-// ==========================================
-// TÍNH NĂNG MỚI: ĐIỂM DANH HÀNG NGÀY (/checkin) - GIỚI HẠN 1 NGÀY/LẦN
-// (Không cần sửa file User.js)
+// TÍNH NĂNG MỚI: ĐIỂM DANH HÀNG NGÀY (/checkin) - ANTI-CHEAT TUYỆT ĐỐI
 // ==========================================
 bot.command('checkin', async (ctx) => {
     const { id } = ctx.from;
     const today = new Date().toDateString();
+    const lockKey = `checkin_${id}`;
+
+    // Chặn đứng hoàn toàn tool gửi spam click đồng thời
+    if (processingLocks.has(lockKey)) return;
+    processingLocks.add(lockKey);
 
     try {
         const user = await User.findOne({ telegramId: id.toString() });
-        if (!user) return ctx.reply("❌ Vui lòng gõ lệnh /start trước khi điểm danh.");
+        if (!user) return await ctx.reply("❌ Vui lòng gõ lệnh /start trước khi điểm danh.");
 
-        // Đọc trường ẩn trực tiếp từ MongoDB bằng phương thức .get()
         const lastCheckin = user.get('lastCheckinDate');
-
-        // Kiểm tra xem hôm nay đã bấm điểm danh chưa
         if (lastCheckin === today) {
-            return ctx.reply("❌ Hôm nay bạn đã nhận quà điểm danh rồi! Hãy quay lại vào ngày mai.", Markup.inlineKeyboard([miniAppButton]));
+            return await ctx.reply("❌ Hôm nay bạn đã nhận quà điểm danh rồi! Hãy quay lại vào ngày mai.", Markup.inlineKeyboard([miniAppButton]));
         }
 
-        // Phần thưởng điểm danh cố định: 25,000 Xu
         const CHECKIN_REWARD = 25000; 
-        user.totalCoins += CHECKIN_REWARD;
         
-        // Ghi đè trường ẩn trực tiếp vào MongoDB bằng phương thức .set() mà không cần khai báo ở User.js
-        user.set('lastCheckinDate', today);
-        user.lastActiveDay = today; // Cập nhật ngày hoạt động đồng bộ hệ thống của bạn
-        
-        await user.save();
-
-        ctx.replyWithMarkdown(
-            `🎁 *ĐIỂM DANH HÀNG NGÀY THÀNH CÔNG!*\n\n` +
-            `🎉 Phần thưởng: *+${CHECKIN_REWARD.toLocaleString()} Xu*\n` +
-            `💰 Số dư tài khoản hiện tại: *${user.totalCoins.toLocaleString()} Xu*`, 
-            Markup.inlineKeyboard([miniAppButton])
+        // Sử dụng toán tử điều kiện Mongoose bảo vệ việc cập nhật độc quyền chống trùng lặp ngày
+        const updatedUser = await User.findOneAndUpdate(
+            { 
+                telegramId: id.toString(),
+                $or: [
+                    { "lastCheckinDate": { $ne: today } },
+                    { "lastCheckinDate": { $exists: false } }
+                ]
+            },
+            { 
+                $inc: { totalCoins: CHECKIN_REWARD },
+                $set: { "lastCheckinDate": today, lastActiveDay: today }
+            },
+            { new: true }
         );
 
+        if (!updatedUser) {
+            return await ctx.reply("❌ Hôm nay bạn đã nhận quà điểm danh rồi! Hãy quay lại vào ngày mai.", Markup.inlineKeyboard([miniAppButton]));
+        }
+
+        await ctx.replyWithMarkdown(
+            `🎁 *ĐIỂM DANH HÀNG NGÀY THÀNH CÔNG!*\n\n` +
+            `🎉 Phần thưởng: *+${CHECKIN_REWARD.toLocaleString()} Xu*\n` +
+            `💰 Số dư tài khoản hiện tại: *${updatedUser.totalCoins.toLocaleString()} Xu*`, 
+            Markup.inlineKeyboard([miniAppButton])
+        );
     } catch (e) {
         console.error("Lỗi điểm danh:", e);
-        ctx.reply("Hệ thống điểm danh đang bảo trì, vui lòng thử lại sau!");
+        await ctx.reply("Hệ thống điểm danh đang bảo trì, vui lòng thử lại sau!");
+    } finally {
+        processingLocks.delete(lockKey);
     }
 });
 
@@ -242,30 +249,32 @@ bot.command('checkin', async (ctx) => {
 // ==========================================
 async function runLuckyWheel(ctx, isCallback = false) {
     const { id } = ctx.from;
-    const COST_DIAMOND = 5; // Chi phí mỗi lượt quay: 5 Kim cương
+    const COST_DIAMOND = 5; 
+    const lockKey = `wheel_${id}`;
+
+    if (processingLocks.has(lockKey)) {
+        return isCallback ? ctx.answerCbQuery("🎰 Vòng quay đang xử lý, đừng bấm liên tục!", { show_alert: true }) : null;
+    }
+    processingLocks.add(lockKey);
 
     try {
-        const user = await User.findOne({ telegramId: id.toString() });
-        if (!user) {
-            const msg = "❌ Vui lòng gõ lệnh /start trước.";
-            return isCallback ? ctx.answerCbQuery(msg, { show_alert: true }) : ctx.reply(msg);
-        }
+        // Áp dụng Atomic Update: Chỉ trừ kim cương ĐỐI VỚI những ai có kim cương lớn hơn hoặc bằng chi phí
+        // Loại bỏ hoàn toàn lỗi cheat "Kim cương âm" do click nhanh
+        const updatedUser = await User.findOneAndUpdate(
+            { telegramId: id.toString(), diamonds: { $gte: COST_DIAMOND } },
+            { $inc: { diamonds: -COST_DIAMOND } },
+            { new: true }
+        );
 
-        // Kiểm tra xem người dùng có đủ kim cương không
-        if (user.diamonds < COST_DIAMOND) {
+        if (!updatedUser) {
             const msg = `❌ Bạn không đủ Kim cương! Mỗi lượt quay yêu cầu *${COST_DIAMOND} 💎*.\n👉 Hãy vào MiniApp làm nhiệm vụ xem quảng cáo để kiếm thêm Kim cương nhé.`;
-            
             if (isCallback) {
-                return ctx.answerCbQuery("❌ Bạn không đủ Kim cương!", { show_alert: true });
+                return await ctx.answerCbQuery("❌ Bạn không đủ Kim cương!", { show_alert: true });
             } else {
-                return ctx.replyWithMarkdown(msg, Markup.inlineKeyboard([miniAppButton]));
+                return await ctx.replyWithMarkdown(msg, Markup.inlineKeyboard([miniAppButton]));
             }
         }
 
-        // Khấu trừ kim cương
-        user.diamonds -= COST_DIAMOND;
-
-        // Danh sách cơ cấu giải thưởng
         const prizes = [
             { name: "😢 Chúc bạn may mắn lần sau!", type: "empty", value: 0 },
             { name: "💰 +20,000 Xu", type: "coin", value: 20000 },
@@ -275,7 +284,6 @@ async function runLuckyWheel(ctx, isCallback = false) {
             { name: "💰 +50,000 Xu", type: "coin", value: 50000 }
         ];
 
-        // Quay ngẫu nhiên phần quà
         const randomIndex = Math.floor(Math.random() * prizes.length);
         const prize = prizes[randomIndex];
 
@@ -283,50 +291,52 @@ async function runLuckyWheel(ctx, isCallback = false) {
                          `💸 Chi phí: -${COST_DIAMOND} 💎\n` +
                          `🎁 Quà nhận được: *${prize.name}*\n\n`;
 
-        // Áp dụng phần thưởng vào tài khoản
+        // Cộng thưởng trực tiếp bằng toán tử Mongoose tăng tiến vô cùng bảo mật
+        let finalUser;
         if (prize.type === 'coin') {
-            user.totalCoins += prize.value;
-            resultText += `💰 Số dư mới: *${user.totalCoins.toLocaleString()} Xu*`;
+            finalUser = await User.findOneAndUpdate({ telegramId: id.toString() }, { $inc: { totalCoins: prize.value } }, { new: true });
+            resultText += `💰 Số dư mới: *${finalUser.totalCoins.toLocaleString()} Xu*`;
         } else if (prize.type === 'diamond') {
-            user.diamonds += prize.value;
-            resultText += `💎 Số dư Kim cương: *${user.diamonds} 💎*`;
+            finalUser = await User.findOneAndUpdate({ telegramId: id.toString() }, { $inc: { diamonds: prize.value } }, { new: true });
+            resultText += `💎 Số dư Kim cương: *${finalUser.diamonds} 💎*`;
         } else if (prize.type === 'levelup') {
-            user.level += 1;
+            // Level-up yêu cầu lấy thông tin level hiện tại và áp công thức đồng bộ
+            const currentLevel = updatedUser.level + 1;
             const RATE_INCREASE_PER_LEVEL = 0.2;
             const baseRate = 12.0;
-            const newMiningRate = baseRate + (user.level - 1) * baseRate * RATE_INCREASE_PER_LEVEL;
-            user.miningRate = parseFloat(newMiningRate.toFixed(1));
+            const newMiningRate = parseFloat((baseRate + (currentLevel - 1) * baseRate * RATE_INCREASE_PER_LEVEL).toFixed(1));
             
-            resultText += `🆙 Cấp độ mới: *Level ${user.level}*\n⚡ Tốc độ khai thác mới: *${user.miningRate} Xu/s*`;
+            finalUser = await User.findOneAndUpdate(
+                { telegramId: id.toString() }, 
+                { $set: { level: currentLevel, miningRate: newMiningRate } }, 
+                { new: true }
+            );
+            resultText += `🆙 Cấp độ mới: *Level ${finalUser.level}*\n⚡ Tốc độ khai thác mới: *${finalUser.miningRate} Xu/s*`;
         } else {
-            resultText += `😢 Chúc bạn may mắn hơn ở các lượt quay kế tiếp!`;
+            resultText += `💎 Số dư Kim cương: *${updatedUser.diamonds} 💎*\n😢 Chúc bạn may mắn hơn ở các lượt quay kế tiếp!`;
         }
 
-        await user.save();
-
-        // Cấu trúc cụm phím Inline
         const keyboard = Markup.inlineKeyboard([
             [Markup.button.callback('🎰 Quay tiếp (-5 💎)', 'spin_wheel')],
             miniAppButton
         ]);
 
         if (isCallback) {
-            // Nếu click nút "Quay tiếp": Sửa nội dung đè lên bong bóng chat hiện tại
-            await ctx.editMessageText(resultText, { parse_mode: 'Markdown', ...keyboard });
+            await ctx.editMessageText(resultText, { parse_mode: 'Markdown', ...keyboard }).catch(() => {});
             await ctx.answerCbQuery("🎰 Kết quả mới đã xuất hiện!"); 
         } else {
-            // Nếu gõ lệnh gốc /luckywheel: Gửi tin nhắn mới tinh làm gốc
             await ctx.replyWithMarkdown(resultText, keyboard);
         }
-
     } catch (e) {
         console.error("Lỗi xử lý vòng quay:", e);
         const errMsg = "Vòng quay đang bận, vui lòng thử lại sau!";
         if (isCallback) {
-            ctx.answerCbQuery(errMsg, { show_alert: true });
+            await ctx.answerCbQuery(errMsg, { show_alert: true }).catch(() => {});
         } else {
-            ctx.reply(errMsg);
+            await ctx.reply(errMsg);
         }
+    } finally {
+        processingLocks.delete(lockKey);
     }
 }
 
@@ -339,153 +349,153 @@ bot.action('spin_wheel', async (ctx) => {
 });
 
 // ==========================================
-// 4. LỆNH ADMIN (BẢO MẬT TUYỆT ĐỐI)
+// 4. LỆNH ADMIN (BẢO MẬT TUYỆT ĐỐI & CHỐNG BUG)
 // ==========================================
 
-// Gửi thông báo toàn hệ thống
 bot.command('broadcast', async (ctx) => {
-    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    if (!process.env.ADMIN_ID || ctx.from.id.toString() !== process.env.ADMIN_ID) return;
     const msg = ctx.message.text.replace('/broadcast', '').trim();
-    if (!msg) return ctx.reply("❌ Nhập nội dung: /broadcast [Nội dung]");
+    if (!msg) return await ctx.reply("❌ Nhập nội dung: /broadcast [Nội dung]");
 
-    const users = await User.find({});
-    ctx.reply(`🚀 Đang gửi thông báo tới ${users.length} người dùng...`);
+    const users = await User.find({}).select('telegramId').lean();
+    await ctx.reply(`🚀 Đang tiến hành gửi thông báo ẩn tới ${users.length} thợ đào...`);
 
     let success = 0;
+    // Sử dụng cơ chế gửi tuần tự an toàn tránh vượt ngưỡng giới hạn API Telegram (Rate limit)
     for (const u of users) {
         try {
             await bot.telegram.sendMessage(u.telegramId, `📢 *THÔNG BÁO HỆ THỐNG*\n\n${msg}`, { parse_mode: 'Markdown' });
             success++;
-            await new Promise(r => setTimeout(r, 50)); 
-        } catch (e) { continue; }
+            await new Promise(r => setTimeout(r, 40)); 
+        } catch (e) { 
+            // Bỏ qua nếu user đã chặn/block bot
+            continue; 
+        }
     }
-    ctx.reply(`✅ Đã gửi thành công tới ${success} người dùng.`);
+    await ctx.reply(`✅ Đã gửi thành công tới ${success}/${users.length} người dùng.`);
 });
 
-// Lệnh Xem danh sách toàn bộ người dùng (Có phân trang thực tế)
 bot.command('list', async (ctx) => {
-    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    if (!process.env.ADMIN_ID || ctx.from.id.toString() !== process.env.ADMIN_ID) return;
     try {
-        const { text, keyboard } = await getUserListPage(1); // Mặc định nạp trang 1
+        const { text, keyboard } = await getUserListPage(1); 
         await ctx.replyWithMarkdown(text, keyboard);
     } catch (e) { 
         console.error("Lỗi lấy dữ liệu /list:", e);
-        ctx.reply("Lỗi lấy dữ liệu hệ thống."); 
+        await ctx.reply("Lỗi lấy dữ liệu hệ thống."); 
     }
 });
 
-// Lắng nghe hành vi chuyển trang từ nút bấm Inline của Admin
 bot.action(/^list_page_(\d+)$/, async (ctx) => {
-    if (ctx.from.id.toString() !== process.env.ADMIN_ID) {
-        return ctx.answerCbQuery("❌ Bạn không có quyền truy cập dữ liệu quản trị!");
+    if (!process.env.ADMIN_ID || ctx.from.id.toString() !== process.env.ADMIN_ID) {
+        return await ctx.answerCbQuery("❌ Bạn không có quyền truy cập dữ liệu quản trị!", { show_alert: true });
     }
     try {
         const targetPage = parseInt(ctx.match[1]);
         const { text, keyboard } = await getUserListPage(targetPage);
-
-        await ctx.editMessageText(text, {
-            parse_mode: 'Markdown',
-            ...keyboard
-        });
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard }).catch(() => {});
         await ctx.answerCbQuery();
     } catch (e) {
         console.error("Lỗi cập nhật trang:", e);
-        ctx.answerCbQuery("Không thể đổi trang.");
+        await ctx.answerCbQuery("Không thể đổi trang.");
     }
 });
 
-// CỘNG XU CHO NGƯỜI DÙNG
+// CỘNG XU CHO NGƯỜI DÙNG (CÓ CHECK ANTI-SPAM SỐ ÂM)
 bot.command('addcoin', async (ctx) => {
-    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    if (!process.env.ADMIN_ID || ctx.from.id.toString() !== process.env.ADMIN_ID) return;
     
-    const args = ctx.message.text.split(' ').slice(1);
-    if (args.length < 2) return ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /addcoin [telegramId] [số xu]");
+    const args = ctx.message.text.split(' ').filter(arg => arg.trim() !== '');
+    if (args.length < 3) return await ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /addcoin [telegramId] [số xu]");
 
-    const targetId = args[0].trim();
-    const amountCoins = parseInt(args[1]);
+    const targetId = args[1].trim();
+    const amountCoins = parseInt(args[2]);
 
-    if (isNaN(amountCoins)) return ctx.reply("❌ Số tiền cộng phải là một số hợp lệ!");
+    // Bảo mật: Không cho phép nhập số âm để trục lợi hoặc phá hoại trừ xu bừa bãi
+    if (isNaN(amountCoins) || amountCoins <= 0) return await ctx.reply("❌ Số tiền cộng phải là số nguyên dương lớn hơn 0!");
 
     try {
-        const user = await User.findOne({ telegramId: targetId });
-        if (!user) return ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
+        const user = await User.findOneAndUpdate(
+            { telegramId: targetId },
+            { $inc: { totalCoins: amountCoins } },
+            { new: true }
+        );
 
-        user.totalCoins += amountCoins;
-        await user.save();
+        if (!user) return await ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
 
-        ctx.reply(`✅ Đã cộng *+${amountCoins.toLocaleString()} Xu* cho người dùng *${user.name}* (ID: ${targetId}).\n💰 Số dư mới: *${user.totalCoins.toLocaleString()} Xu*`, { parse_mode: 'Markdown' });
+        await ctx.replyWithMarkdown(`✅ Đã cộng *+${amountCoins.toLocaleString()} Xu* cho người dùng *${user.name}* (ID: ${targetId}).\n💰 Số dư mới: *${user.totalCoins.toLocaleString()} Xu*`);
         
         try {
             await bot.telegram.sendMessage(targetId, `🎁 Bạn vừa được Admin tặng *+${amountCoins.toLocaleString()} Xu* vào tài khoản!`, { parse_mode: 'Markdown' });
-        } catch (err) { console.log(`Không thể gửi tin nhắn thông báo cho tài khoản ${targetId}`); }
-
+        } catch (err) { console.log(`Không thể gửi tin nhắn báo cho tài khoản ${targetId}`); }
     } catch (e) {
-        ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
+        await ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
     }
 });
 
-// CỘNG KIM CƯƠNG CHO NGƯỜI DÙNG
+// CỘNG KIM CƯƠNG CHO NGƯỜI DÙNG (CÓ CHECK ANTI-SPAM SỐ ÂM)
 bot.command('adddiamond', async (ctx) => {
-    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    if (!process.env.ADMIN_ID || ctx.from.id.toString() !== process.env.ADMIN_ID) return;
     
-    const args = ctx.message.text.split(' ').slice(1);
-    if (args.length < 2) return ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /adddiamond [telegramId] [số kim cương]");
+    const args = ctx.message.text.split(' ').filter(arg => arg.trim() !== '');
+    if (args.length < 3) return await ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /adddiamond [telegramId] [số kim cương]");
 
-    const targetId = args[0].trim();
-    const amountDiamonds = parseInt(args[1]);
+    const targetId = args[1].trim();
+    const amountDiamonds = parseInt(args[2]);
 
-    if (isNaN(amountDiamonds)) return ctx.reply("❌ Số kim cương cộng phải là một số hợp lệ!");
+    if (isNaN(amountDiamonds) || amountDiamonds <= 0) return await ctx.reply("❌ Số kim cương cộng phải là số nguyên dương lớn hơn 0!");
 
     try {
-        const user = await User.findOne({ telegramId: targetId });
-        if (!user) return ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
+        const user = await User.findOneAndUpdate(
+            { telegramId: targetId },
+            { $inc: { diamonds: amountDiamonds } },
+            { new: true }
+        );
 
-        user.diamonds += amountDiamonds;
-        await user.save();
+        if (!user) return await ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
 
-        ctx.reply(`✅ Đã cộng *+${amountDiamonds.toLocaleString()} 💎* cho người dùng *${user.name}* (ID: ${targetId}).\n💎 Số dư mới: *${user.diamonds} Kim cương*`, { parse_mode: 'Markdown' });
+        await ctx.replyWithMarkdown(`✅ Đã cộng *+${amountDiamonds.toLocaleString()} 💎* cho người dùng *${user.name}* (ID: ${targetId}).\n💎 Số dư mới: *${user.diamonds} Kim cương*`);
         
         try {
             await bot.telegram.sendMessage(targetId, `🎁 Bạn vừa được Admin tặng *+${amountDiamonds.toLocaleString()} 💎* vào tài khoản!`, { parse_mode: 'Markdown' });
-        } catch (err) { console.log(`Không thể gửi tin nhắn thông báo cho tài khoản ${targetId}`); }
-
+        } catch (err) { console.log(`Không thể gửi tin nhắn báo cho tài khoản ${targetId}`); }
     } catch (e) {
-        ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
+        await ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
     }
 });
 
-// THAY ĐỔI LEVEL CHO NGƯỜI DÙNG (TỰ ĐỘNG CẬP NHẬT TỐC ĐỘ ĐÀO)
+// THAY ĐỔI LEVEL CHO NGƯỜI DÙNG (TỰ ĐỘNG TÍNH TOÁN AN TOÀN)
 bot.command('setlevel', async (ctx) => {
-    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    if (!process.env.ADMIN_ID || ctx.from.id.toString() !== process.env.ADMIN_ID) return;
 
-    const args = ctx.message.text.split(' ').slice(1);
-    if (args.length < 2) return ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /setlevel [telegramId] [Level]");
+    const args = ctx.message.text.split(' ').filter(arg => arg.trim() !== '');
+    if (args.length < 3) return await ctx.reply("❌ Sai cú pháp! Vui lòng nhập: /setlevel [telegramId] [Level]");
 
-    const targetId = args[0].trim();
-    const newLevel = parseInt(args[1]);
+    const targetId = args[1].trim();
+    const newLevel = parseInt(args[2]);
 
-    if (isNaN(newLevel) || newLevel < 1) return ctx.reply("❌ Cấp độ phải là số nguyên lớn hơn hoặc bằng 1!");
+    if (isNaN(newLevel) || newLevel < 1) return await ctx.reply("❌ Cấp độ phải là số nguyên lớn hơn hoặc bằng 1!");
 
     try {
-        const user = await User.findOne({ telegramId: targetId });
-        if (!user) return ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
-
         const RATE_INCREASE_PER_LEVEL = 0.2;
         const baseRate = 12.0;
-        const newMiningRate = baseRate + (newLevel - 1) * baseRate * RATE_INCREASE_PER_LEVEL;
+        const newMiningRate = parseFloat((baseRate + (newLevel - 1) * baseRate * RATE_INCREASE_PER_LEVEL).toFixed(1));
 
-        user.level = newLevel;
-        user.miningRate = parseFloat(newMiningRate.toFixed(1)); 
-        await user.save();
+        const user = await User.findOneAndUpdate(
+            { telegramId: targetId },
+            { $set: { level: newLevel, miningRate: newMiningRate } },
+            { new: true }
+        );
 
-        ctx.reply(`✅ Đã điều chỉnh tài khoản *${user.name}* lên *Level ${newLevel}*.\n⚡ Tốc độ khai thác mới: *${user.miningRate} Xu/s*`, { parse_mode: 'Markdown' });
+        if (!user) return await ctx.reply("❌ Không tìm thấy người dùng này trong hệ thống.");
+
+        await ctx.replyWithMarkdown(`✅ Đã điều chỉnh tài khoản *${user.name}* lên *Level ${newLevel}*.\n⚡ Tốc độ khai thác mới: *${user.miningRate} Xu/s*`);
 
         try {
             await bot.telegram.sendMessage(targetId, `🆙 Tài khoản của bạn đã được thay đổi lên *Level ${newLevel}* bởi Admin!\n⚡ Tốc độ đào mới: *${user.miningRate} Xu/s*`, { parse_mode: 'Markdown' });
-        } catch (err) { console.log(`Không thể gửi tin nhắn thông báo cho tài khoản ${targetId}`); }
-
+        } catch (err) { console.log(`Không thể gửi tin nhắn báo cho tài khoản ${targetId}`); }
     } catch (e) {
-        ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
+        await ctx.reply("❌ Có lỗi xảy ra khi thực hiện lệnh.");
     }
 });
 
