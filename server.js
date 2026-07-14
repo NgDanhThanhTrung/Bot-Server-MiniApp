@@ -1,107 +1,117 @@
-require('dotenv').config();
-const express = require('express');
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const mongoose = require('mongoose');
-const User = require('./models/User');
-const axios = require('axios');
+const express = require('express');
+const User = require('./models/User'); 
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Kết nối cơ sở dữ liệu MongoDB Cloud
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('Bot-Server connected to MongoDB successfully.'))
-  .catch(err => {
-    console.error('MongoDB connection error in Bot-Server:', err);
-    process.exit(1);
-  });
-
 const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// Tham số cấu hình kinh tế gốc
+const EXCHANGE_RATE = 20000;    
+
+// Kết nối cơ sở dữ liệu chung 
+mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('✅ Bot Server đã kết nối Database Kinh Tế 2.0'))
+    .catch(err => console.error('❌ Lỗi kết nối DB:', err));
+
+// LOGIC XỬ LÝ LỆNH /START & GHI NHẬN MÃ GIỚI THIỆU KHÔNG CHECK CLONE CỨNG NGAY
+bot.start(async (ctx) => {
+    const { id, first_name, username } = ctx.from;
+    const startPayload = ctx.startPayload; // Lấy ID người mời (Ví dụ: 987654321) từ link ref
+    const today = new Date().toDateString();
+    
+    try {
+        let user = await User.findOne({ telegramId: id.toString() });
+
+        if (!user) {
+            let referredBy = null;
+            if (startPayload && startPayload !== id.toString()) {
+                // Kiểm tra xem ID người mời có thực sự tồn tại trong DB không
+                const referrerExist = await User.findOne({ telegramId: startPayload.trim() });
+                if (referrerExist) {
+                    referredBy = startPayload.trim();
+                }
+            }
+
+            // Tạo người dùng mới hoàn toàn tương thích cấu hình
+            user = new User({
+                telegramId: id.toString(),
+                username: username || 'n/a',
+                name: first_name || 'Người dùng',
+                referredBy: referredBy,
+                lastActiveDay: today,
+                isMining: false,
+                miningStartedAt: null
+            });
+            await user.save();
+            
+            ctx.replyWithMarkdown(`🎉 *Chào mừng bạn đến với Siêu Cấp Máy Đào 2.0!* \nTài khoản nông trại của bạn đã được khởi tạo thành công.`);
+        } else {
+            // Kiểm tra và reset ads hằng ngày nếu có hoạt động mới
+            if (user.lastActiveDay !== today) {
+                user.adsWatchedToday = 0;
+                user.lastActiveDay = today;
+                await user.save();
+            }
+            ctx.replyWithMarkdown(`👋 *Chào mừng trở lại, ${user.name}!* \nHãy truy cập Mini App để tiếp tục vận hành máy khai thác.`);
+        }
+
+        // Trả về nút bấm Mini App tích hợp
+        ctx.reply("Bấm nút dưới đây để vào nông trại:", Markup.inlineKeyboard([
+            Markup.button.webApp("🌾 Vào Nông Trại 🌾", process.env.MINI_APP_URL)
+        ]));
+
+    } catch (e) {
+        console.error("Lỗi xử lý /start:", e);
+        ctx.reply("Hệ thống đang bận nâng cấp, vui lòng thử lại sau.");
+    }
+});
+
+// ADMIN COMMAND: Gửi thông báo toàn hệ thống từ file gốc
+bot.command('broadcast', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    const msg = ctx.message.text.split('/broadcast ')[1];
+    if (!msg) return ctx.reply('⚠️ Định dạng: /broadcast [Nội dung]');
+
+    const users = await User.find();
+    ctx.reply(`📢 Bắt đầu gửi tới ${users.length} người dùng...`);
+
+    let success = 0;
+    for (const u of users) {
+        try {
+            await bot.telegram.sendMessage(u.telegramId, `📢 *THÔNG BÁO HỆ THỐNG*\n\n${msg}`, { parse_mode: 'Markdown' });
+            success++;
+            await new Promise(r => setTimeout(r, 50)); // Tránh spam nghẽn Telegram API
+        } catch (e) { continue; }
+    }
+    ctx.reply(`✅ Đã gửi thành công tới ${success} người dùng.`);
+});
+
+// ADMIN COMMAND: Xem danh sách Top thợ đào
+bot.command('list', async (ctx) => {
+    if (ctx.from.id.toString() !== process.env.ADMIN_ID) return;
+    try {
+        const topUsers = await User.find().sort({ totalCoins: -1 }).limit(20);
+        let text = "🏆 *TOP 20 ĐẠI GIA MÁY ĐÀO*\n\n";
+        topUsers.forEach((u, i) => {
+            text += `${i + 1}. ${u.name} - ${u.totalCoins.toLocaleString()} Xu\n`;
+        });
+        ctx.replyWithMarkdown(text);
+    } catch (e) { ctx.reply("Lỗi lấy dữ liệu."); }
+});
+
+// CẤU HÌNH WEB SERVER & WEBHOOK CALLBACK
 app.use(express.json());
 
-// Xử lý lệnh khởi tạo bot /start
-bot.start(async (ctx) => {
-  try {
-    const telegramId = ctx.from.id;
-    const username = ctx.from.username || ctx.from.first_name || 'Nông Dân Ảo';
-    const startPayload = ctx.payload; // Nhận ref_telegramId từ link t.me/bot?start=ref_123456
+if (process.env.USE_WEBHOOK === 'true') {
+    app.use(bot.webhookCallback('/api/tg-webhook'));
+    console.log("Bot cấu hình chạy bằng cơ chế Webhopk.");
+} else {
+    bot.launch();
+    console.log("Bot cấu hình chạy bằng cơ chế Long Polling.");
+}
 
-    let referredBy = null;
-    if (startPayload && startPayload.startsWith('ref_')) {
-      const refIdStr = startPayload.replace('ref_', '');
-      const refId = parseInt(refIdStr, 10);
-      if (!isNaN(refId) && refId !== telegramId) {
-        referredBy = refId;
-      }
-    }
+app.get('/', (req, res) => res.send('Bot Mining Server 2.0 Live.'));
 
-    let user = await User.findOne({ telegramId });
-
-    if (!user) {
-      // Khởi tạo nông dân mới
-      user = new User({
-        telegramId,
-        username,
-        referredBy,
-        miningStartedAt: null,
-        isMining: false,
-        lastActiveDay: new Date().toISOString().split('T')[0]
-      });
-      await user.save();
-      
-      await ctx.reply(`🎉 Chào mừng nông dân mới ${username} tham gia Nông Trại Khai Thác Ảo! 🌾\nMảnh đất của bạn đã sẵn sàng để canh tác.`);
-    } else {
-      await ctx.reply(`👋 Chào mừng trở lại nông trại, ${username}! Hãy chăm sóc khu mỏ và đừng để máy đào bị tắt.`);
-    }
-
-    // Hiển thị Inline Keyboard khởi tạo WebApp
-    await ctx.reply('Bấm vào nút dưới đây để vào nông trại và vận hành máy đào của bạn ngay lập tức:', {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: '🌾 Vào Nông Trại 🌾',
-              web_app: { url: process.env.MINI_APP_URL }
-            }
-          ]
-        ]
-      }
-    });
-
-  } catch (error) {
-    console.error('Lỗi khi xử lý lệnh /start:', error);
-    ctx.reply('Hệ thống bận, vui lòng thử lại sau giây lát.');
-  }
-});
-
-// Endpoint nhận Webhook từ Telegram API
-app.post(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
-  bot.handleUpdate(req.body, res);
-});
-
-// Endpoint tự phục vụ tự động ping Keep-Alive
-app.get('/health', (req, res) => {
-  res.status(200).send('Bot Server is live and healthy!');
-});
-
-app.listen(PORT, async () => {
-  console.log(`Bot Server running on port ${PORT}`);
-  try {
-    // Đăng ký Webhook tự động với Telegram
-    await bot.telegram.setWebhook(`${process.env.WEBHOOK_URL}/bot${process.env.BOT_TOKEN}`);
-    console.log('Webhook registered successfully.');
-  } catch (err) {
-    console.error('Failed to set Webhook:', err);
-  }
-});
-
-// Cơ chế Keep-Alive tránh Render Free Tier ngủ đông (Chạy mỗi 10 phút)
-setInterval(() => {
-  axios.get(`${process.env.WEBHOOK_URL}/health`)
-    .then(() => console.log('[Keep-Alive] Bot Server pinged successfully.'))
-    .catch(err => console.error('[Keep-Alive] Bot Server ping failed:', err.message));
-
-  axios.get(`${process.env.MINI_APP_URL}/health`)
-    .then(() => console.log('[Keep-Alive] Web Service pinged successfully.'))
-    .catch(err => console.error('[Keep-Alive] Web Service ping failed:', err.message));
-}, 10 * 60 * 1000);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Bot Express server running on port ${PORT}`));
