@@ -1,36 +1,26 @@
 const mongoose = require('mongoose');
 
-const userSchema = new mongoose.Schema({
-    telegramId: { type: String, required: true, unique: true, index: true },
-    username: { type: String, default: 'n/a' },
-    name: { type: String, default: 'Người dùng' },
-    
-    // --- KINH TẾ 2.0 ---
-    totalCoins: { type: Number, default: 0 },
-    diamonds: { type: Number, default: 0 },
-    
-    // --- HỆ THỐNG MÁY ĐÀO ---
-    level: { type: Number, default: 1 },
-    isMining: { type: Boolean, default: false },
-    miningStartedAt: { type: Date, default: null },
-    miningRate: { type: Number, default: 12.0 }, 
-
-    // --- QUẢN LÝ QUẢNG CÁO & HOẠT ĐỘNG ---
-    adsWatchedToday: { type: Number, default: 0 },
-    lastActiveDay: { type: String, default: new Date().toDateString() },
-    dailyVideo: { type: Number, default: 0 },
-    dailyInterstitial: { type: Number, default: 0 },
-    dailyBanner: { type: Number, default: 0 },
-    
-    // --- ĐIỂM DANH ---
-    dailyCheckin: {
-        lastCheckinDay: { type: String, default: "" },
-        streak: { type: Number, default: 0 }
-    },
-
-    // --- GIỚI THIỆU ---
-    refs: { type: Number, default: 0 },
-    referredBy: { type: String, default: null } 
+const UserSchema = new mongoose.Schema({
+  telegramId: { type: Number, required: true, unique: true, index: true },
+  username: { type: String, default: '' },
+  
+  // Tài sản trong game
+  totalCoins: { type: Number, default: 0, min: 0 },
+  diamonds: { type: Number, default: 0, min: 0 },
+  
+  // Chỉ số máy đào
+  level: { type: Number, default: 1, min: 1 },
+  isMining: { type: Boolean, default: false },
+  miningStartedAt: { type: Date, default: null },
+  miningRate: { type: Number, default: 12.0 }, // Mặc định Level 1 là 12.0 xu/giây
+  
+  // Chỉ số quảng cáo & Nhiệm vụ chống cheat
+  adsWatchedToday: { type: Number, default: 0, min: 0 },
+  lastActiveDay: { type: String, default: '' }, // Lưu chuỗi dạng YYYY-MM-DD để reset ads mỗi ngày
+  
+  // Hệ thống Referral chống clone
+  referredBy: { type: Number, default: null },
+  referralRewardClaimed: { type: Boolean, default: false } // Đánh dấu nếu tài khoản này đã kích hoạt thưởng cho người giới thiệu
 }, { timestamps: true });
 
-module.exports = mongoose.model('User', userSchema);
+module.exports = mongoose.model('User', UserSchema);
